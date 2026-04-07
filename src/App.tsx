@@ -250,6 +250,7 @@ export default function App() {
   const [loanAmount, setLoanAmount] = useState(() => localStorage.getItem("arb_loan_amount") || "100");
   const [loanProvider, setLoanProvider] = useState(() => localStorage.getItem("arb_loan_provider") || "PancakeSwap");
   const [privateRpc, setPrivateRpc] = useState(() => localStorage.getItem("arb_private_rpc") || "");
+  const [bloxrAuthHeader, setBloxrAuthHeader] = useState(() => localStorage.getItem("arb_bloxr_auth") || "");
   const [useMevShare, setUseMevShare] = useState(() => localStorage.getItem("arb_use_mev_share") === "true");
   const [mevStatus, setMevStatus] = useState<any>(null);
 
@@ -261,7 +262,7 @@ export default function App() {
   const [privateKey, setPrivateKey] = useState(() => localStorage.getItem("arb_pk") || "");
   const [contractAddress, setContractAddress] = useState(() => localStorage.getItem("arb_ca") || "");
   const [rpcEndpoint, setRpcEndpoint] = useState(() => localStorage.getItem("arb_rpc") || "https://bsc-dataseed.binance.org/");
-  const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.1");
+  const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.35");
   const [maxGas, setMaxGas] = useState(() => localStorage.getItem("arb_max_gas") || "5");
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [isContractVerified, setIsContractVerified] = useState(false);
@@ -313,6 +314,10 @@ export default function App() {
   }, [privateRpc]);
 
   useEffect(() => {
+    localStorage.setItem("arb_bloxr_auth", bloxrAuthHeader);
+  }, [bloxrAuthHeader]);
+
+  useEffect(() => {
     localStorage.setItem("arb_use_mev_share", useMevShare.toString());
   }, [useMevShare]);
 
@@ -320,8 +325,12 @@ export default function App() {
     const fetchMevStatus = async () => {
       try {
         const res = await fetch("/api/mev/status");
-        const data = await res.json();
-        setMevStatus(data);
+        if (!res.ok) return;
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          setMevStatus(data);
+        }
       } catch (e) {}
     };
     const interval = setInterval(fetchMevStatus, 3000);
@@ -341,8 +350,12 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ contractAddress, rpcEndpoint })
         });
-        const data = await res.json();
-        setIsContractVerified(data.verified);
+        if (!res.ok) return;
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          setIsContractVerified(data.verified);
+        }
       } catch (err) {
         setIsContractVerified(false);
       }
@@ -359,8 +372,12 @@ export default function App() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ privateKey, rpcEndpoint })
         });
-        const data = await res.json();
-        if (data.balance) setWalletBalance(data.balance);
+        if (!res.ok) return;
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const data = await res.json();
+          if (data.balance) setWalletBalance(data.balance);
+        }
       } catch (err) {
         setWalletBalance(null);
       }
@@ -378,6 +395,21 @@ export default function App() {
     const fetchPrices = async () => {
       try {
         const res = await fetch("/api/prices");
+        if (!res.ok) {
+          const text = await res.text();
+          if (text.includes("Rate exceeded")) {
+            console.warn("API Rate limit exceeded, retrying later...");
+            return;
+          }
+          throw new Error(`HTTP error! status: ${res.status}`);
+        }
+        
+        const contentType = res.headers.get("content-type");
+        if (!contentType || !contentType.includes("application/json")) {
+          console.error("Expected JSON but received:", contentType);
+          return;
+        }
+
         const data: PriceData = await res.json();
         setPrices(data);
         
@@ -476,6 +508,7 @@ export default function App() {
     localStorage.setItem("arb_loan_amount", loanAmount);
     localStorage.setItem("arb_loan_provider", loanProvider);
     localStorage.setItem("arb_private_rpc", privateRpc);
+    localStorage.setItem("arb_bloxr_auth", bloxrAuthHeader);
     localStorage.setItem("arb_use_mev_share", useMevShare.toString());
 
     try {
@@ -485,7 +518,8 @@ export default function App() {
         body: JSON.stringify({
           privateRpc,
           useMevShare,
-          privateKey
+          privateKey,
+          bloxrAuthHeader
         })
       });
     } catch (e) {}
@@ -532,6 +566,13 @@ export default function App() {
           minProfit: minProfit
         })
       });
+
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await res.text();
+        console.error("Non-JSON response from /api/execute:", text.slice(0, 100));
+        throw new Error("Server returned non-JSON response. The server might be restarting or encountered an error.");
+      }
 
       const data = await res.json();
 
@@ -1274,6 +1315,17 @@ export default function App() {
                         value={privateRpc}
                         onChange={(e) => setPrivateRpc(e.target.value)}
                         placeholder="https://rpc.bloxroute.com/..."
+                        className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <label className="text-[10px] font-medium text-slate-400 uppercase">BloXroute Auth Header</label>
+                      <input 
+                        type="text" 
+                        value={bloxrAuthHeader}
+                        onChange={(e) => setBloxrAuthHeader(e.target.value)}
+                        placeholder="Authorization: <key>"
                         className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-2 text-sm text-white focus:outline-none focus:border-blue-500/50"
                       />
                     </div>
