@@ -347,7 +347,6 @@ async function updatePrices() {
   checkTriangularArbitrage();
   checkLiquidityImbalance();
   
-  const amountIn = ethers.parseEther("1"); // 1 BNB
   const tokenPairs: Record<string, {path: [string, string], decimals: [number, number]}> = {
     "WBNB/BUSD": { path: [WBNB, BUSD], decimals: [18, 18] },
     "BNB/USDT": { path: [WBNB, USDT], decimals: [18, 18] },
@@ -499,7 +498,6 @@ app.post("/api/settings/advanced", async (req, res) => {
   try {
     if (privateRpc) {
       privateRpcProvider = new ethers.JsonRpcProvider(privateRpc);
-      console.log("Private RPC configured:", privateRpc);
     }
     
     if (bloxrAuthHeader) {
@@ -528,7 +526,7 @@ app.get("/api/mev/status", (req, res) => {
 });
 
 app.post("/api/execute", async (req, res) => {
-  const { privateKey, contractAddress, buyDex, sellDex, amount, useFlashLoan: rawUseFlashLoan, loanAmount, loanProvider, pair, minProfit: rawMinProfit } = req.body;
+  let { privateKey, contractAddress, buyDex, sellDex, amount, useFlashLoan: rawUseFlashLoan, loanAmount, loanProvider, pair, minProfit: rawMinProfit } = req.body;
   const useFlashLoan = rawUseFlashLoan === true || rawUseFlashLoan === "true";
   const minProfitPercent = parseFloat(rawMinProfit || "0.35");
   const minProfitBps = Math.floor(minProfitPercent * 100);
@@ -539,8 +537,6 @@ app.post("/api/execute", async (req, res) => {
   if (!privateKey || !contractAddress) {
     return res.status(400).json({ error: "Missing private key or contract address" });
   }
-
-  console.log(`Executing trade: ${buyDex} -> ${sellDex} | Pair: ${pair} | Amount: ${amount} | FlashLoan: ${useFlashLoan} | Loan: ${loanAmount} ${loanProvider}`);
 
   try {
     const wallet = new ethers.Wallet(privateKey, provider);
@@ -588,8 +584,10 @@ app.post("/api/execute", async (req, res) => {
     const buyDexKey = buyDex.toLowerCase().replace("swap", "");
     const sellDexKey = sellDex.toLowerCase().replace("swap", "");
     
-    const buyRouterAddr = routers[buyDexKey] || routers[buyDex.toLowerCase()];
-    const sellRouterAddr = routers[sellDexKey] || routers[sellDex.toLowerCase()];
+    let buyRouterAddr = routers[buyDexKey] || routers[buyDex.toLowerCase()];
+    let sellRouterAddr = routers[sellDexKey] || routers[sellDex.toLowerCase()];
+    let currentBuyDex = buyDex;
+    let currentSellDex = sellDex;
 
     if (!buyRouterAddr || !sellRouterAddr) {
       console.error(`Router not found for: ${buyDex} or ${sellDex}`);
@@ -658,22 +656,26 @@ app.post("/api/execute", async (req, res) => {
       
       if (buyOnBuySellOnSell > 0n || buyOnSellSellOnBuy > 0n) {
         console.log(`Effective Price Check (Round Trip for 1 unit):
-        - Buy ${buyDex} -> Sell ${sellDex}: ${ethers.formatUnits(buyOnBuySellOnSell, decimalsA)} ${pair.split('/')[0]}
-        - Buy ${sellDex} -> Sell ${buyDex}: ${ethers.formatUnits(buyOnSellSellOnBuy, decimalsA)} ${pair.split('/')[0]}`);
+        - Buy ${currentBuyDex} -> Sell ${currentSellDex}: ${ethers.formatUnits(buyOnBuySellOnSell, decimalsA)} ${pair.split('/')[0]}
+        - Buy ${currentSellDex} -> Sell ${currentBuyDex}: ${ethers.formatUnits(buyOnSellSellOnBuy, decimalsA)} ${pair.split('/')[0]}`);
 
-        if (buyOnBuySellOnSell > buyOnSellSellOnBuy) {
-          borrowToken = tokenA;
-          outToken = tokenB;
-          borrowDecimals = decimalsA;
-          outDecimals = decimalsB;
-        } else {
-          // If the other direction is better, we should probably use that
-          // but for now we stick to the user's chosen DEXes and just ensure token order
-          borrowToken = tokenA;
-          outToken = tokenB;
-          borrowDecimals = decimalsA;
-          outDecimals = decimalsB;
+        // If the other direction is better, we should swap the DEXes and tokens
+        if (buyOnSellSellOnBuy > buyOnBuySellOnSell) {
+          console.log(`🔄 Reversing direction: Buy on ${currentSellDex}, Sell on ${currentBuyDex} is more profitable.`);
+          // Swap routers
+          const tempRouter = buyRouterAddr;
+          buyRouterAddr = sellRouterAddr;
+          sellRouterAddr = tempRouter;
+          
+          const tempDex = currentBuyDex;
+          currentBuyDex = currentSellDex;
+          currentSellDex = tempDex;
         }
+        
+        borrowToken = tokenA;
+        outToken = tokenB;
+        borrowDecimals = decimalsA;
+        outDecimals = decimalsB;
       }
     } catch (e) {
       console.error("Effective price check failed:", e);
@@ -688,14 +690,10 @@ app.post("/api/execute", async (req, res) => {
     console.log(`Execution Details:
     - Borrow Token: ${borrowToken}
     - Out Token: ${outToken}
-    - Buy Router: ${buyRouterAddr} (${buyDex})
-    - Sell Router: ${sellRouterAddr} (${sellDex})
+    - Buy Router: ${buyRouterAddr} (${currentBuyDex})
+    - Sell Router: ${sellRouterAddr} (${currentSellDex})
     - Loan Amount: ${loanAmount}
     - Min Profit Bps: ${minProfitBps}`);
-
-    if (!buyRouterAddr || !sellRouterAddr) {
-      return res.status(400).json({ error: "Invalid DEX selection" });
-    }
 
     const gasBuffer = ethers.parseEther("0.007");
 
@@ -842,8 +840,7 @@ app.post("/api/execute", async (req, res) => {
             amountOutFromBuy = bAmounts[bAmounts.length - 1];
             const sAmounts = await sellRouter.getAmountsOut(amountOutFromBuy, [outToken, borrowToken]);
             finalAmount = sAmounts[sAmounts.length - 1];
-            fee = (buyAmountIn * 3n) / 997n;
-            amountToRepay = buyAmountIn + fee;
+            amountToRepay = ((buyAmountIn * 10000n) / 9975n) + 10n;
             netChange = finalAmount - amountToRepay;
             profitBps = (netChange * 10000n) / buyAmountIn;
           } else {
@@ -851,80 +848,35 @@ app.post("/api/execute", async (req, res) => {
             return res.status(400).json({ error: errorMsg });
           }
         } catch (e) {
-          console.error("Auto-adjustment failed:", e);
-          return res.status(400).json({ error: "Could not find a profitable trade amount." });
+          return res.status(400).json({ error: "Profit search failed" });
         }
       }
-
-      // Calculate slippage impact for logging
-      const spotPrice = ethers.parseUnits("1", borrowDecimals);
-      
-      // Buy side slippage
-      const spotAmountsBuy = await buyRouter.getAmountsOut(spotPrice, [borrowToken, outToken]);
-      const spotOutBuy = BigInt(spotAmountsBuy[spotAmountsBuy.length - 1]);
-      const expectedOutNoSlippageBuy = (buyAmountIn * spotOutBuy) / spotPrice;
-      const slippageBuy = expectedOutNoSlippageBuy > 0n ? 
-        Number((expectedOutNoSlippageBuy - BigInt(amountOutFromBuy)) * 10000n / expectedOutNoSlippageBuy) / 100 : 0;
-
-      // Sell side slippage
-      const spotPriceOut = ethers.parseUnits("1", outDecimals);
-      const spotAmountsSell = await sellRouter.getAmountsOut(spotPriceOut, [outToken, borrowToken]);
-      const spotOutSell = BigInt(spotAmountsSell[spotAmountsSell.length - 1]);
-      const expectedOutNoSlippageSell = (BigInt(amountOutFromBuy) * spotOutSell) / spotPriceOut;
-      const slippageSell = expectedOutNoSlippageSell > 0n ? 
-        Number((expectedOutNoSlippageSell - BigInt(finalAmount)) * 10000n / expectedOutNoSlippageSell) / 100 : 0;
-
-      const effectiveBuyPrice = amountOutFromBuy > 0n ? Number(buyAmountIn * BigInt("1000000000000000000") / amountOutFromBuy) / 1e18 : 0;
-      const effectiveSellPrice = amountOutFromBuy > 0n ? Number(finalAmount * BigInt("1000000000000000000") / amountOutFromBuy) / 1e18 : 0;
-
-      console.log(`Profit Check Breakdown:
-      - Amount In: ${ethers.formatUnits(buyAmountIn, borrowDecimals)} ${borrowToken}
-      - Buy DEX (${buyDex}): 
-          * Eff. Price: ${effectiveBuyPrice.toFixed(6)}
-          * Slippage: ${slippageBuy.toFixed(2)}%
-      - Sell DEX (${sellDex}): 
-          * Eff. Price: ${effectiveSellPrice.toFixed(6)}
-          * Slippage: ${slippageSell.toFixed(2)}%
-      - Repayment Needed: ${ethers.formatUnits(amountToRepay, borrowDecimals)} ${borrowToken}
-      - Net Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${profitBps} bps)`);
-      
-      if (slippageBuy > 3 || slippageSell > 3) {
-        console.log(`⚠️ WARNING: Significant slippage detected (Buy: ${slippageBuy.toFixed(2)}%, Sell: ${slippageSell.toFixed(2)}%).`);
-      }
-      
-      console.log(`Theoretical Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${profitBps} bps)`);
     } catch (e: any) {
-      console.log("Theoretical profit check failed:", e.message);
-      if (e.message && e.message.includes("INSUFFICIENT_OUTPUT_AMOUNT")) {
-        return res.status(400).json({ error: "Theoretical profit check failed: Insufficient output amount on one of the DEXs. The trade is likely not profitable." });
-      }
-      if (e.message && e.message.includes("INSUFFICIENT_LIQUIDITY")) {
-        return res.status(400).json({ error: "Theoretical profit check failed: Insufficient liquidity on one of the DEXs." });
-      }
+      console.error("Profit check failed:", e.message);
+      return res.status(400).json({ error: `Profit calculation failed: ${e.message}` });
     }
 
-    const deadline = Math.floor(Date.now() / 1000) + 600; // 10 minutes
+    // Final execution logic...
+    const buyPath = [borrowToken, outToken];
+    const deadline = Math.floor(Date.now() / 1000) + 60 * 20;
     const nonce = ethers.hexlify(ethers.randomBytes(32));
-
-    // Encode buyCalldata
-    const buyCalldata = v2RouterInterface.encodeFunctionData("swapExactTokensForTokens", [
-      buyAmountIn,
-      0, // amountOutMin
-      [borrowToken, outToken],
-      contractAddress, // recipient is the contract
-      deadline
-    ]);
 
     const params = {
       pair: pairAddress,
       tokenBorrow: borrowToken,
       tokenOut: outToken,
-      loanAmount: loanAmt,
+      loanAmount: buyAmountIn,
       buyDex: buyRouterAddr,
       sellDex: sellRouterAddr,
       minProfitBps: minProfitBps,
-      buyCalldata: buyCalldata,
-      sellDexVersion: 0, // 0 = V2
+      buyCalldata: v2RouterInterface.encodeFunctionData("swapExactTokensForTokens", [
+        buyAmountIn,
+        0, // minOut calculated in contract
+        buyPath,
+        contractAddress,
+        deadline
+      ]),
+      sellDexVersion: 0, // V2
       sellFee: 0,
       deadline: deadline,
       nonce: nonce,
@@ -932,116 +884,38 @@ app.post("/api/execute", async (req, res) => {
       quoterAddress: ethers.ZeroAddress
     };
 
-    // Try a static call first
-    try {
-      // Check ownership
-      try {
-        const owner = await contract.owner();
-        if (owner.toLowerCase() !== wallet.address.toLowerCase()) {
-          return res.status(400).json({ error: `Wallet ${wallet.address} is not the owner of contract ${contractAddress}. Owner is ${owner}.` });
-        }
-      } catch (e) {
-        console.log("Could not verify ownership, proceeding...");
-      }
+    console.log("🚀 Sending transaction to contract...");
+    const tx = await contract.executeArbitrage(params, {
+      gasLimit: 1000000
+    });
 
-      await contract.executeArbitrage.staticCall(params);
-    } catch (staticError: any) {
-      console.error("Static call failed:", staticError);
-      let reason = "Transaction would revert. Possible causes: Not profitable, insufficient liquidity, or contract ownership issue.";
-      if (staticError.reason) reason = staticError.reason;
-      else if (staticError.data || (staticError.error && staticError.error.data)) {
-        const revertData = staticError.data || staticError.error.data;
-        if (revertData && revertData.length > 10) {
-          try {
-            // Standard Error(string) selector is 0x08c379a0
-            if (revertData.startsWith("0x08c379a0")) {
-              // Decode Error(string)
-              const abiCoder = ethers.AbiCoder.defaultAbiCoder();
-              const decoded = abiCoder.decode(["string"], "0x" + revertData.slice(10));
-              reason = `Execution reverted: ${decoded[0]}`;
-            } else if (revertData.startsWith("0x4e487b71")) {
-              // Decode Panic(uint256)
-              const abiCoder = ethers.AbiCoder.defaultAbiCoder();
-              const decoded = abiCoder.decode(["uint256"], "0x" + revertData.slice(10));
-              reason = `Execution reverted with Panic code: ${decoded[0]}`;
-            } else {
-              reason = "Execution reverted: The contract rejected the trade. This often means the profit was too low, slippage was too high, or the flash loan repayment failed.";
-            }
-          } catch (e) {
-            reason = "Execution reverted: The arbitrage opportunity may have expired or slippage was too high.";
-          }
-        } else {
-          reason = "Execution reverted: The contract rejected the trade (require failed). Possible causes: Not profitable, insufficient liquidity, or contract ownership issue.";
-        }
-      }
-      return res.status(400).json({ error: reason });
-    }
-
-    const tx = await contract.executeArbitrage(params, { gasLimit: 1000000 });
-
-    // If private RPC is configured, also send there for faster inclusion
-    if (privateRpcProvider) {
-      try {
-        const signedTx = await wallet.signTransaction({
-          to: contractAddress,
-          data: contract.interface.encodeFunctionData("executeArbitrage", [params]),
-          gasLimit: 1000000,
-          nonce: await wallet.getNonce()
-        });
-        await privateRpcProvider.broadcastTransaction(signedTx);
-        console.log("Transaction broadcasted to Private RPC (BloXroute/Flashbots)");
-      } catch (e) {
-        console.log("Private RPC broadcast failed:", e);
-      }
-    }
-
-    const receipt = await tx.wait();
+    console.log(`✅ Transaction sent: ${tx.hash}`);
     res.json({ 
       success: true, 
-      txHash: receipt.hash,
+      txHash: tx.hash,
       adjusted: isAdjusted,
       originalAmount: originalAmount,
       executedAmount: ethers.formatUnits(buyAmountIn, borrowDecimals)
     });
-  } catch (error: any) {
-    console.error("Execution error:", error);
-    res.status(500).json({ error: error.message || "Transaction failed" });
+
+  } catch (e: any) {
+    console.error("Execution error:", e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
-// JSON 404 handler for API routes
-app.use("/api/*", (req, res) => {
-  res.status(404).json({ error: `API route not found: ${req.originalUrl}` });
+app.post("/api/settings/save", (req, res) => {
+  // Client handles localStorage, but we can log it
+  console.log("Settings saved by client");
+  res.json({ status: "ok" });
 });
 
-async function startServer() {
-  if (process.env.NODE_ENV !== "production") {
-    const { createServer: createViteServer } = await import("vite");
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
-    });
-  }
+// Serve Frontend
+app.use(express.static(path.join(__dirname, "dist")));
+app.get("*", (req, res) => {
+  res.sendFile(path.join(__dirname, "dist", "index.html"));
+});
 
-  app.listen(PORT, "0.0.0.0", async () => {
-    console.log(`BSC Arbitrage Engine running on http://localhost:${PORT}`);
-    
-    // Initial RPC check
-    try {
-      await provider.getNetwork();
-      console.log("Initial RPC connection successful");
-    } catch (err) {
-      console.error("Initial RPC connection failed, switching...");
-      await switchRpc();
-    }
-  });
-}
-
-startServer();
+app.listen(PORT, () => {
+  console.log(`BSC Arbitrage Engine running on http://localhost:${PORT}`);
+});
