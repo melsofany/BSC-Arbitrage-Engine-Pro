@@ -37,7 +37,7 @@ const RPC_NODES = [
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://binance.ankr.com/bsc",
+  "wss://rpc.ankr.com/bsc/ws",
   "wss://bsc-ws-node.nariox.org"
 ];
 
