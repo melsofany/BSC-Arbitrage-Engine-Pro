@@ -8,6 +8,7 @@ const __dirname = path.dirname(__filename);
 
 import MevShareClient from "@flashbots/mev-share-client";
 import ethersMulticallProvider from "ethers-multicall-provider";
+import OpportunityScanner, { ScannerConfig, DEXPool } from "./src/lib/opportunityScanner";
 const { MulticallWrapper } = ethersMulticallProvider;
 import WebSocket from "ws";
 
@@ -56,10 +57,38 @@ let provider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex]);
 let switchRetries = 0;
 let isSwitching = false;
 
+let pancakeContract: ethers.Contract;
+let biswapContract: ethers.Contract;
+let apeswapContract: ethers.Contract;
+let bakeryContract: ethers.Contract;
+let babyswapContract: ethers.Contract;
+let mdexContract: ethers.Contract;
+
+let opportunityScanner: OpportunityScanner;
+
+const scannerConfig: ScannerConfig = {
+  updateInterval: 5000, // 5 seconds
+  minProfitBps: 30, // 0.3%
+  maxPathLength: 3, // Triangular arbitrage
+  gasEstimate: ethers.parseUnits("0.007", "ether") // 0.007 BNB
+};
+
 async function initMulticall() {
   try {
     multicallProvider = MulticallWrapper.wrap(provider);
     console.log("Multicall Provider initialized (ethers-multicall-provider)");
+
+    // Initialize contracts with the multicall provider
+    pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, multicallProvider);
+    biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, multicallProvider);
+    apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, multicallProvider);
+    bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, multicallProvider);
+    babyswapContract = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, multicallProvider);
+    mdexContract = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, multicallProvider);
+
+    opportunityScanner = new OpportunityScanner(provider, scannerConfig);
+    opportunityScanner.startScanning();
+
   } catch (e: any) {
     console.error("Multicall init failed:", e.message);
   }
@@ -255,13 +284,6 @@ const LINK = ethers.getAddress("0xf8a06f1317e506864b618301216b45c397b9010d".toLo
 const FIL = ethers.getAddress("0x0d21c53b6e53997751ff24b0375936788096d40f".toLowerCase());
 const LTC = ethers.getAddress("0x4338665c00d9755421b2518275675b399046093c".toLowerCase());
 
-let pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
-let biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
-let apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, provider);
-let bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
-let babyswapContract = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, provider);
-let mdexContract = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, provider);
-
 let lastPrices = {
   pancake: "0",
   biswap: "0",
@@ -289,24 +311,17 @@ setInterval(() => {
 
 async function updatePrices() {
   try {
-    const readProvider = multicallProvider || provider;
-    const pancake = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, readProvider);
-    const biswap = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, readProvider);
-    const apeswap = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, readProvider);
-    const bakery = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, readProvider);
-    const babyswap = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, readProvider);
-    const mdex = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, readProvider);
-
+    // Use multicall for efficient price fetching
     const amountIn = ethers.parseEther("1");
     const path = [WBNB, BUSD];
 
     const [pOut, bOut, aOut, bakOut, babyOut, mOut] = await Promise.all([
-      pancake.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
-      biswap.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
-      apeswap.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
-      bakery.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
-      babyswap.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
-      mdex.getAmountsOut(amountIn, path).catch(() => [0n, 0n])
+      pancakeContract.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      biswapContract.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      apeswapContract.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      bakeryContract.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      babyswapContract.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      mdexContract.getAmountsOut(amountIn, path).catch(() => [0n, 0n])
     ]);
 
     lastPrices = {
@@ -325,6 +340,40 @@ async function updatePrices() {
       },
       timestamp: Date.now()
     };
+
+    // Add pools to the opportunity scanner
+    const dexes = [
+      { name: "pancake", router: PANCAKE_ROUTER, factory: PANCAKE_FACTORY },
+      { name: "biswap", router: BISWAP_ROUTER, factory: BISWAP_FACTORY },
+      { name: "apeswap", router: APESWAP_ROUTER, factory: APESWAP_FACTORY },
+      { name: "bakery", router: BAKERY_ROUTER, factory: BAKERY_FACTORY },
+      { name: "babyswap", router: BABYSWAP_ROUTER, factory: BABYSWAP_FACTORY },
+      { name: "mdex", router: MDEX_ROUTER, factory: MDEX_FACTORY }
+    ];
+
+    opportunityScanner.clear(); // Clear previous pools
+    for (const dex of dexes) {
+      const pairAddress = await new ethers.Contract(dex.factory, ["function getPair(address tokenA, address tokenB) external view returns (address pair)"], provider).getPair(WBNB, BUSD);
+      if (pairAddress !== ethers.ZeroAddress) {
+        const pairContract = new ethers.Contract(pairAddress, ["function getReserves() external view returns (uint112, uint112, uint32)", "function token0() external view returns (address)", "function token1() external view returns (address)"], provider);
+        const [reserve0, reserve1] = await pairContract.getReserves();
+        const token0 = await pairContract.token0();
+        const token1 = await pairContract.token1();
+
+        const pool: DEXPool = {
+          dexName: dex.name,
+          routerAddress: dex.router,
+          factoryAddress: dex.factory,
+          token0: token0,
+          token1: token1,
+          reserve0: BigInt(reserve0),
+          reserve1: BigInt(reserve1),
+          fee: 25 // Assuming 0.25% fee for V2 DEXs
+        };
+        opportunityScanner.addPool(pool);
+      }
+    }
+
   } catch (e: any) {
     console.error("Price update failed:", e.message);
     if (e.message.includes("429") || e.message.includes("timeout") || e.message.includes("failed")) {
@@ -348,6 +397,14 @@ async function setupMevShare(signer: ethers.Wallet) {
 // API Endpoints
 app.get("/api/prices", (req, res) => {
   res.json(lastPrices);
+});
+
+app.get("/api/opportunities", (req, res) => {
+  res.json(opportunityScanner.getOpportunities());
+});
+
+app.get("/api/scanner/stats", (req, res) => {
+  res.json(opportunityScanner.getStats());
 });
 
 app.post("/api/settings/advanced", async (req, res) => {
@@ -691,7 +748,6 @@ app.post("/api/execute", async (req, res) => {
           if (bestAmount > 0n) {
             console.log(`✅ Found profitable amount: ${ethers.formatUnits(bestAmount, borrowDecimals)}. Adjusting trade...`);
             buyAmountIn = bestAmount;
-            if (useFlashLoan) loanAmt = bestAmount;
             isAdjusted = true;
             
             // Re-calculate values for the adjusted amount
