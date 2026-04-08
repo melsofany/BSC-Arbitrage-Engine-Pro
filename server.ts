@@ -30,15 +30,15 @@ let wsProviders: WebSocket[] = [];
 // BSC RPC URLs - Using multiple fallbacks for reliability
 const RPC_NODES = [
   "https://bsc-dataseed.binance.org/",
-  "https://bsc-dataseed1.defibit.io/",
-  "https://bsc-dataseed1.ninicoin.io/",
-  "https://bsc-rpc.publicnode.com"
+  "https://bsc-rpc.publicnode.com",
+  "https://rpc.ankr.com/bsc",
+  "https://bsc-dataseed1.defibit.io/"
 ];
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://bsc.publicnode.com",
-  "wss://bsc-dataseed.binance.org"
+  "wss://bsc-dataseed.binance.org",
+  "wss://rpc.ankr.com/bsc/ws"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -47,7 +47,32 @@ let BLOXR_AUTH_HEADER = process.env.BLOXR_AUTH_HEADER || ""; // User should prov
 
 let currentWsIndex = 0;
 let currentRpcIndex = 0;
-let provider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex]);
+
+// Initialize provider with static network to avoid "failed to detect network" errors
+const bscNetwork = ethers.Network.from(56);
+
+// Use a more robust initialization for JsonRpcProvider
+let provider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], bscNetwork, { 
+  staticNetwork: true,
+  batchMaxCount: 1 
+});
+
+// Initial connection check
+async function verifyInitialConnection() {
+  try {
+    // Timeout the network check to avoid hanging
+    const networkPromise = provider.getNetwork();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000));
+    
+    await Promise.race([networkPromise, timeoutPromise]);
+    console.log(`✅ Connected to BSC via ${RPC_NODES[currentRpcIndex]}`);
+  } catch (e: any) {
+    console.warn(`⚠️ Initial RPC ${RPC_NODES[currentRpcIndex]} failed (${e.message}), switching...`);
+    await switchRpc();
+  }
+}
+verifyInitialConnection();
+
 let switchRetries = 0;
 let isSwitching = false;
 
@@ -92,17 +117,65 @@ async function analyzePendingTx(txHash: string) {
             const decoded = v2RouterInterface.decodeFunctionData("swapExactTokensForTokens", tx.data);
             const path = decoded[2];
             if (path && path.length >= 2) {
-              console.log(`🔍 Path detected: ${path[0]} -> ${path[path.length-1]}`);
-              // We could trigger a targeted price check here
+              const tokenIn = path[0];
+              const tokenOut = path[path.length - 1];
+              console.log(`🔍 Backrunning Opportunity: ${tokenIn.slice(0,6)} -> ${tokenOut.slice(0,6)}`);
+              
+              // Targeted check for this specific pair across all routers
+              setTimeout(() => checkSpecificPair(tokenIn, tokenOut), 20);
             }
           } catch (e) {}
         }
         
-        // Trigger immediate price check for the involved tokens
+        // Trigger general update if it's a major router
         setTimeout(updatePrices, 50); 
       }
     }
   } catch (e) {}
+}
+
+async function checkSpecificPair(tokenIn: string, tokenOut: string) {
+  const routers = {
+    pancake: PANCAKE_ROUTER,
+    biswap: BISWAP_ROUTER,
+    apeswap: APESWAP_ROUTER,
+    bakeryswap: BAKERY_ROUTER
+  };
+
+  const amountIn = ethers.parseEther("1");
+  const results: any = {};
+
+  const promises = Object.entries(routers).map(async ([name, addr]) => {
+    try {
+      const contract = new ethers.Contract(addr, ROUTER_ABI, multicallProvider || provider);
+      const amounts = await contract.getAmountsOut(amountIn, [tokenIn, tokenOut]);
+      results[name] = ethers.formatUnits(amounts[amounts.length - 1], 18);
+    } catch (e) {
+      results[name] = "0";
+    }
+  });
+
+  await Promise.all(promises);
+  
+  // Compare results and log if profitable
+  const dexes = Object.keys(results);
+  for (let i = 0; i < dexes.length; i++) {
+    for (let j = 0; j < dexes.length; j++) {
+      if (i === j) continue;
+      const buyDex = dexes[i];
+      const sellDex = dexes[j];
+      const buyPrice = parseFloat(results[buyDex]);
+      const sellPrice = parseFloat(results[sellDex]);
+
+      if (buyPrice > 0 && sellPrice > 0) {
+        // This is a very rough check, real check happens in execute
+        const spread = ((sellPrice - buyPrice) / buyPrice) * 10000;
+        if (spread > 40) {
+          console.log(`🔥 [MEMPOOL] Arbitrage Found: ${buyDex} -> ${sellDex} | Spread: ${spread.toFixed(2)} bps`);
+        }
+      }
+    }
+  }
 }
 
 // Multi-Source Mempool Listener
@@ -124,13 +197,28 @@ function setupMempoolListeners() {
   } else {
     console.log("BloXroute Auth Header missing, skipping BloXroute mempool...");
   }
+
+  // 3. New Pair Listener
+  setupNewPairListener();
+}
+
+function setupNewPairListener() {
+  try {
+    const pancakeFactory = new ethers.Contract(PANCAKE_FACTORY, FACTORY_ABI, provider);
+    pancakeFactory.on("PairCreated", (token0, token1, pair) => {
+      console.log(`✨ [NEW PAIR] PancakeSwap: ${token0.slice(0,6)} / ${token1.slice(0,6)} at ${pair.slice(0,6)}`);
+    });
+  } catch (e) {
+    console.error("Failed to setup New Pair Listener:", e.message);
+  }
 }
 
 function connectToWs(url: string, sourceName: string, headers: any = {}) {
   try {
     const ws = new WebSocket(url, {
       headers: headers,
-      handshakeTimeout: 10000
+      handshakeTimeout: 20000, // Increased to 20s
+      followRedirects: true
     });
 
     ws.on("open", () => {
@@ -194,9 +282,15 @@ async function performSwitch() {
   console.log(`Switching to RPC: ${RPC_NODES[currentRpcIndex]} (Attempt ${switchRetries})`);
   
   try {
-    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex]);
-    // Try to get network to verify it's working
-    await newProvider.getNetwork();
+    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], bscNetwork, { 
+      staticNetwork: true,
+      batchMaxCount: 1 
+    });
+    // Try to get network to verify it's working with timeout
+    const networkPromise = newProvider.getNetwork();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000));
+    
+    await Promise.race([networkPromise, timeoutPromise]);
     
     provider = newProvider;
     // Re-initialize contracts with new provider
@@ -206,8 +300,8 @@ async function performSwitch() {
     bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
     console.log("Successfully switched to new RPC");
     switchRetries = 0; // Reset on success
-  } catch (err) {
-    console.error(`Failed to connect to RPC ${RPC_NODES[currentRpcIndex]}, trying next...`);
+  } catch (err: any) {
+    console.error(`Failed to connect to RPC ${RPC_NODES[currentRpcIndex]}: ${err.message}`);
     await performSwitch();
   }
 }
@@ -220,6 +314,10 @@ const ROUTER_ABI = [
 const v2RouterInterface = new ethers.Interface([
   "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory)"
 ]);
+
+const FACTORY_ABI = [
+  "event PairCreated(address indexed token0, address indexed token1, address pair, uint)"
+];
 
 // Addresses
 const PANCAKE_ROUTER = ethers.getAddress("0x10ed43c718714eb63d5aa57b78b54704e256024e".toLowerCase());
@@ -249,6 +347,20 @@ const XRP = ethers.getAddress("0x1d2f0da169ceb2df7b744837037f081f79794b16".toLow
 const LINK = ethers.getAddress("0xf8a06f1317e506864b618301216b45c397b9010d".toLowerCase());
 const FIL = ethers.getAddress("0x0d21c53b6e53997751ff24b0375936788096d40f".toLowerCase());
 const LTC = ethers.getAddress("0x4338665c00d9755421b2518275675b399046093c".toLowerCase());
+
+// Long-Tail & High Volatility Tokens
+const SHIB = ethers.getAddress("0x2859e4544C4bB03966803b044A93563Bd2D0DD4D".toLowerCase());
+const DOGE = ethers.getAddress("0xba2ae424d960c26247dd6c32edc70b295c744c43".toLowerCase());
+const MATIC = ethers.getAddress("0xcc42724c6683b7e57334c4e856f4c9965ed682bd".toLowerCase());
+const AVAX = ethers.getAddress("0x1ce0c2827e2ef14d5c4f29a091d735a204794041".toLowerCase());
+const SOL = ethers.getAddress("0x570a5d26f7765ecb712c0924e4de545b89fd43df".toLowerCase());
+const FTM = ethers.getAddress("0xad29abb318791d579433d831ed122afeaf297ff5".toLowerCase());
+const ATOM = ethers.getAddress("0x0eb3a705fc54725037cc9e008bdede697f62f335".toLowerCase());
+const NEAR = ethers.getAddress("0x1fa4a73a3f01f7741a8ef940a023e3acc6f9e720".toLowerCase());
+const ALGO = ethers.getAddress("0xe79a6d4b9632b8d28641f42205049ce9997a3298".toLowerCase());
+const VET = ethers.getAddress("0x6fd7604651d073c84df356d227f758e2a2366bd2".toLowerCase());
+const SAND = ethers.getAddress("0x3764be110aa3415617d362f306a96146c4e3955d".toLowerCase());
+const MANA = ethers.getAddress("0x484797e666e0d31f489565b395775464ec33421c".toLowerCase());
 
 let pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
 let biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
@@ -289,28 +401,53 @@ async function checkTriangularArbitrage() {
     "Apeswap": apeswapContract
   };
 
-  const paths = [
-    [WBNB, BUSD, USDT, WBNB],
-    [WBNB, CAKE, BUSD, WBNB],
-    [WBNB, ETH, BUSD, WBNB],
-    [WBNB, BTCB, BUSD, WBNB]
-  ];
+  // Base tokens for triangular paths
+  const bases = [WBNB, BUSD, USDT];
+  // Intermediate tokens
+  const intermediates = [CAKE, ETH, BTCB, SHIB, DOGE, MATIC, AVAX, SOL, FTM];
+
+  const paths: string[][] = [];
+  
+  // Generate dynamic triangular paths
+  for (const base of bases) {
+    for (const inter1 of intermediates) {
+      for (const inter2 of bases) {
+        if (base !== inter1 && inter1 !== inter2 && base !== inter2) {
+          paths.push([base, inter1, inter2, base]);
+        }
+      }
+    }
+  }
+
+  // Add some specific high-volume paths
+  paths.push([WBNB, CAKE, BUSD, WBNB]);
+  paths.push([WBNB, ETH, USDT, WBNB]);
+  paths.push([WBNB, BTCB, BUSD, WBNB]);
 
   for (const [name, contract] of Object.entries(routers)) {
-    for (const path of paths) {
-      try {
-        const amountIn = ethers.parseEther("1");
-        const amounts = await contract.getAmountsOut(amountIn, path);
-        const amountOut = amounts[amounts.length - 1];
-        
-        const profit = amountOut - amountIn;
-        const profitBps = (profit * 10000n) / amountIn;
+    const readProvider = multicallProvider || provider;
+    const routerWithMulticall = new ethers.Contract(contract.target, ROUTER_ABI, readProvider);
+    
+    // Process in batches to avoid RPC overload
+    const batchSize = 10;
+    for (let i = 0; i < paths.length; i += batchSize) {
+      const batch = paths.slice(i, i + batchSize);
+      const promises = batch.map(async (path) => {
+        try {
+          const amountIn = ethers.parseEther("1");
+          const amounts = await routerWithMulticall.getAmountsOut(amountIn, path);
+          const amountOut = amounts[amounts.length - 1];
+          
+          const profit = amountOut - amountIn;
+          const profitBps = (profit * 10000n) / amountIn;
 
-        if (profitBps > 15n) { // 0.15% profit threshold for triangle (after fees)
-          console.log(`💎 Triangular Opportunity on ${name}: ${profitBps} bps | Path: ${path.join(" -> ")}`);
-          // In a real scenario, we would trigger execution here if automated
-        }
-      } catch (e) {}
+          if (profitBps > 35n) { // Increased threshold to 35 bps as requested
+            console.log(`💎 [TRIANGLE] Opportunity on ${name}: ${profitBps} bps | Path: ${path.map(a => a.slice(0,6)).join(" -> ")}`);
+            // Trigger simulation or execution if needed
+          }
+        } catch (e) {}
+      });
+      await Promise.all(promises);
     }
   }
 }
@@ -363,7 +500,14 @@ async function updatePrices() {
     "SHIB/BNB": ["0x2859e4544C4bB03966803b044A93563Bd2D0DD4D", WBNB],
     "DOGE/BNB": ["0xba2ae424d960c26247dd6c32edc70b295c744c43", WBNB],
     "MATIC/BNB": ["0xcc42724c6683b7e57334c4e856f4c9965ed682bd", WBNB],
-    "AVAX/BNB": ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB]
+    "AVAX/BNB": ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB],
+    "SOL/BNB": [SOL, WBNB],
+    "FTM/BNB": [FTM, WBNB],
+    "ATOM/BNB": [ATOM, WBNB],
+    "NEAR/BNB": [NEAR, WBNB],
+    "SAND/BNB": [SAND, WBNB],
+    "MANA/BNB": [MANA, WBNB],
+    "VET/BNB": [VET, WBNB]
   };
 
   const routers = {
@@ -748,6 +892,7 @@ app.post("/api/execute", async (req, res) => {
     }
 
     // Theoretical Profit Check
+    let currentProfitBps = 0n;
     try {
       const readProvider = multicallProvider || provider;
       const buyRouter = new ethers.Contract(buyRouterAddr, ROUTER_ABI, readProvider);
@@ -764,7 +909,7 @@ app.post("/api/execute", async (req, res) => {
       
       let isProfitable = finalAmount > amountToRepay;
       let netChange = finalAmount - amountToRepay;
-      let profitBps = buyAmountIn > 0n ? (netChange * 10000n) / buyAmountIn : 0n;
+      currentProfitBps = buyAmountIn > 0n ? (netChange * 10000n) / buyAmountIn : 0n;
       
       console.log(`Profit Calculation:
       - Buy In: ${ethers.formatUnits(buyAmountIn, borrowDecimals)}
@@ -784,7 +929,7 @@ app.post("/api/execute", async (req, res) => {
       - Spot Final: ${ethers.formatUnits(spotFinal, borrowDecimals)}
       - Spot Repay: ${ethers.formatUnits(spotRepay, borrowDecimals)}
       - Max Theoretical Spread: ${maxPossibleBps} bps (after fees)
-      - Current Amount Spread: ${profitBps} bps (after slippage)`);
+      - Current Amount Spread: ${currentProfitBps} bps (after slippage)`);
 
       // CRITICAL: Early exit if theoretical spread is too low
       if (maxPossibleBps < 30n) {
@@ -801,7 +946,7 @@ app.post("/api/execute", async (req, res) => {
         });
       }
 
-      if (profitBps < BigInt(minProfitBps)) {
+      if (currentProfitBps < BigInt(minProfitBps)) {
         console.log(`⚠️ Trade not profitable with ${ethers.formatUnits(buyAmountIn, borrowDecimals)}. Searching for a better amount...`);
         
         // Try to find a profitable amount if the current one is too large
@@ -843,9 +988,9 @@ app.post("/api/execute", async (req, res) => {
             fee = (buyAmountIn * 3n) / 997n;
             amountToRepay = buyAmountIn + fee;
             netChange = finalAmount - amountToRepay;
-            profitBps = (netChange * 10000n) / buyAmountIn;
+            currentProfitBps = (netChange * 10000n) / buyAmountIn;
           } else {
-            const errorMsg = `Trade is not profitable enough even with smaller amounts. Theoretical profit: ${profitBps} bps, required: ${minProfitBps} bps. (Final: ${ethers.formatUnits(finalAmount, borrowDecimals)}, Need: ${ethers.formatUnits(amountToRepay, borrowDecimals)})`;
+            const errorMsg = `Trade is not profitable enough even with smaller amounts. Theoretical profit: ${currentProfitBps} bps, required: ${minProfitBps} bps. (Final: ${ethers.formatUnits(finalAmount, borrowDecimals)}, Need: ${ethers.formatUnits(amountToRepay, borrowDecimals)})`;
             return res.status(400).json({ error: errorMsg });
           }
         } catch (e) {
@@ -884,13 +1029,13 @@ app.post("/api/execute", async (req, res) => {
           * Eff. Price: ${effectiveSellPrice.toFixed(6)}
           * Slippage: ${slippageSell.toFixed(2)}%
       - Repayment Needed: ${ethers.formatUnits(amountToRepay, borrowDecimals)} ${borrowToken}
-      - Net Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${profitBps} bps)`);
+      - Net Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${currentProfitBps} bps)`);
       
       if (slippageBuy > 3 || slippageSell > 3) {
         console.log(`⚠️ WARNING: Significant slippage detected (Buy: ${slippageBuy.toFixed(2)}%, Sell: ${slippageSell.toFixed(2)}%).`);
       }
       
-      console.log(`Theoretical Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${profitBps} bps)`);
+      console.log(`Theoretical Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${currentProfitBps} bps)`);
     } catch (e: any) {
       console.log("Theoretical profit check failed:", e.message);
       if (e.message && e.message.includes("INSUFFICIENT_OUTPUT_AMOUNT")) {
@@ -975,7 +1120,24 @@ app.post("/api/execute", async (req, res) => {
       return res.status(400).json({ error: reason });
     }
 
-    const tx = await contract.executeArbitrage(params, { gasLimit: 1000000 });
+    // Dynamic Gas Price based on profit
+    const feeData = await provider.getFeeData();
+    const baseGasPrice = feeData.gasPrice || ethers.parseUnits("3", "gwei");
+    let gasPrice = baseGasPrice;
+    
+    // Use currentProfitBps for dynamic gas
+    if (currentProfitBps > 100n) { // > 1% profit
+      gasPrice = (baseGasPrice * 150n) / 100n; // 50% more
+    } else if (currentProfitBps > 50n) { // > 0.5% profit
+      gasPrice = (baseGasPrice * 120n) / 100n; // 20% more
+    } else {
+      gasPrice = (baseGasPrice * 110n) / 100n; // 10% boost for speed
+    }
+
+    const tx = await contract.executeArbitrage(params, { 
+      gasLimit: 1000000,
+      gasPrice: gasPrice
+    });
 
     // If private RPC is configured, also send there for faster inclusion
     if (privateRpcProvider) {
