@@ -26,25 +26,19 @@ let mevShareClient: MevShareClient | null = null;
 let privateRpcProvider: ethers.JsonRpcProvider | null = null;
 let multicallProvider: any = null;
 let wsProviders: WebSocket[] = [];
-// WebSocket provider dedicated for stable event subscriptions (avoids HTTP filter expiry)
-let eventWsProvider: ethers.WebSocketProvider | null = null;
 
-// BSC RPC URLs - Reliable nodes for cloud-hosted environments (no Binance dataseed which blocks cloud IPs)
+// BSC RPC URLs - Using multiple fallbacks for reliability
 const RPC_NODES = [
+  "https://bsc-dataseed.binance.org/",
   "https://bsc-rpc.publicnode.com",
   "https://rpc.ankr.com/bsc",
-  "https://bsc-dataseed1.defibit.io/",
-  "https://bsc-dataseed2.defibit.io/",
-  "https://bsc-dataseed3.defibit.io/",
-  "https://bsc-dataseed4.defibit.io/",
-  "https://bsc-dataseed1.ninicoin.io/",
-  "https://bsc-dataseed2.ninicoin.io/",
-  "https://bsc.meowrpc.com",
-  "https://bsc.drpc.org"
+  "https://bsc-dataseed1.defibit.io/"
 ];
 
 const WS_NODES = [
-  "wss://bsc-rpc.publicnode.com"
+  "wss://bsc-rpc.publicnode.com",
+  "wss://bsc-dataseed.binance.org",
+  "wss://rpc.ankr.com/bsc/ws"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -185,6 +179,132 @@ async function checkSpecificPair(tokenIn: string, tokenOut: string) {
 }
 
 // Multi-Source Mempool Listener
+function setupMempoolListeners() {
+  // Clear existing
+  wsProviders.forEach(ws => {
+    try { ws.removeAllListeners(); ws.close(); } catch (e) {}
+  });
+  wsProviders = [];
+
+  // 1. Standard BSC Nodes (Concurrent)
+  WS_NODES.slice(0, 2).forEach((url, idx) => {
+    connectToWs(url, `Standard-${idx}`);
+  });
+
+  // 2. BloXroute (if configured)
+  if (BLOXR_AUTH_HEADER) {
+    connectToWs(BLOXR_BSC_WS, "BloXroute", { "Authorization": BLOXR_AUTH_HEADER });
+  } else {
+    console.log("BloXroute Auth Header missing, skipping BloXroute mempool...");
+  }
+
+  // 3. New Pair Listener
+  setupNewPairListener();
+}
+
+function setupNewPairListener() {
+  try {
+    const pancakeFactory = new ethers.Contract(PANCAKE_FACTORY, FACTORY_ABI, provider);
+    pancakeFactory.on("PairCreated", (token0, token1, pair) => {
+      console.log(`✨ [NEW PAIR] PancakeSwap: ${token0.slice(0,6)} / ${token1.slice(0,6)} at ${pair.slice(0,6)}`);
+    });
+  } catch (e) {
+    console.error("Failed to setup New Pair Listener:", e.message);
+  }
+}
+
+function connectToWs(url: string, sourceName: string, headers: any = {}) {
+  try {
+    const ws = new WebSocket(url, {
+      headers: headers,
+      handshakeTimeout: 20000, // Increased to 20s
+      followRedirects: true
+    });
+
+    ws.on("open", () => {
+      console.log(`[${sourceName}] Mempool WebSocket connected to ${url}`);
+      ws.send(JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "eth_subscribe",
+        params: ["newPendingTransactions"]
+      }));
+    });
+
+    ws.on("message", async (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        if (message.params && message.params.result) {
+          const txHash = message.params.result;
+          analyzePendingTx(txHash);
+        }
+      } catch (e) {}
+    });
+
+    ws.on("error", (err) => {
+      console.error(`[${sourceName}] WS Error:`, err.message);
+    });
+
+    ws.on("close", () => {
+      console.log(`[${sourceName}] WS Closed, reconnecting in 5s...`);
+      setTimeout(() => connectToWs(url, sourceName, headers), 5000);
+    });
+
+    wsProviders.push(ws);
+  } catch (e: any) {
+    console.error(`Failed to connect to ${sourceName}:`, e.message);
+  }
+}
+
+setupMempoolListeners();
+
+async function switchRpc() {
+  if (isSwitching) return;
+  isSwitching = true;
+  
+  try {
+    await performSwitch();
+  } finally {
+    isSwitching = false;
+  }
+}
+
+async function performSwitch() {
+  if (switchRetries >= RPC_NODES.length) {
+    console.error("All RPC nodes are failing. Waiting before retry...");
+    await new Promise(r => setTimeout(r, 10000));
+    switchRetries = 0;
+    return;
+  }
+  
+  currentRpcIndex = (currentRpcIndex + 1) % RPC_NODES.length;
+  switchRetries++;
+  console.log(`Switching to RPC: ${RPC_NODES[currentRpcIndex]} (Attempt ${switchRetries})`);
+  
+  try {
+    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], bscNetwork, { 
+      staticNetwork: true,
+      batchMaxCount: 1 
+    });
+    // Try to get network to verify it's working with timeout
+    const networkPromise = newProvider.getNetwork();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000));
+    
+    await Promise.race([networkPromise, timeoutPromise]);
+    
+    provider = newProvider;
+    // Re-initialize contracts with new provider
+    pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
+    biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
+    apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, provider);
+    bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
+    console.log("Successfully switched to new RPC");
+    switchRetries = 0; // Reset on success
+  } catch (err: any) {
+    console.error(`Failed to connect to RPC ${RPC_NODES[currentRpcIndex]}: ${err.message}`);
+    await performSwitch();
+  }
+}
 
 // DEX Router ABIs (Simplified for getAmountsOut)
 const ROUTER_ABI = [
@@ -249,168 +369,6 @@ let bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
 let babyswapContract = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, provider);
 let mdexContract = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, provider);
 
-setupMempoolListeners();
-
-function setupMempoolListeners() {
-  // Clear existing
-  wsProviders.forEach(ws => {
-    try { ws.removeAllListeners(); ws.close(); } catch (e) {}
-  });
-  wsProviders = [];
-
-  // 1. Standard BSC Nodes (Concurrent)
-  WS_NODES.slice(0, 2).forEach((url, idx) => {
-    connectToWs(url, `Standard-${idx}`);
-  });
-
-  // 2. BloXroute (if configured)
-  if (BLOXR_AUTH_HEADER) {
-    connectToWs(BLOXR_BSC_WS, "BloXroute", { "Authorization": BLOXR_AUTH_HEADER });
-  } else {
-    console.log("BloXroute Auth Header missing, skipping BloXroute mempool...");
-  }
-
-  // 3. New Pair Listener
-  setupNewPairListener();
-}
-
-function setupNewPairListener() {
-  try {
-    // Use WebSocketProvider for stable event subscriptions (no eth_getFilterChanges expiry)
-    if (eventWsProvider) {
-      try { eventWsProvider.destroy(); } catch (_) {}
-    }
-    eventWsProvider = new ethers.WebSocketProvider(WS_NODES[0]);
-
-    eventWsProvider.websocket.on("error", (err: Error) => {
-      console.warn("[PairListener] WS error, reconnecting in 10s:", err.message);
-      setTimeout(setupNewPairListener, 10000);
-    });
-
-    eventWsProvider.websocket.on("close", () => {
-      console.warn("[PairListener] WS closed, reconnecting in 10s...");
-      setTimeout(setupNewPairListener, 10000);
-    });
-
-    const pancakeFactory = new ethers.Contract(PANCAKE_FACTORY, FACTORY_ABI, eventWsProvider);
-    pancakeFactory.on("PairCreated", (token0: string, token1: string, pair: string) => {
-      console.log(`✨ [NEW PAIR] PancakeSwap: ${token0.slice(0,6)} / ${token1.slice(0,6)} at ${pair.slice(0,6)}`);
-    });
-
-    console.log("[PairListener] Listening for new PancakeSwap pairs via WebSocket");
-  } catch (e: any) {
-    console.error("Failed to setup New Pair Listener:", e.message);
-    setTimeout(setupNewPairListener, 15000);
-  }
-}
-
-function connectToWs(url: string, sourceName: string, headers: any = {}) {
-  try {
-    const ws = new WebSocket(url, {
-      headers: headers,
-      handshakeTimeout: 20000, // Increased to 20s
-      followRedirects: true
-    });
-
-    ws.on("open", () => {
-      console.log(`[${sourceName}] Mempool WebSocket connected to ${url}`);
-      ws.send(JSON.stringify({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "eth_subscribe",
-        params: ["newPendingTransactions"]
-      }));
-    });
-
-    ws.on("message", async (data) => {
-      try {
-        const message = JSON.parse(data.toString());
-        if (message.params && message.params.result) {
-          const txHash = message.params.result;
-          analyzePendingTx(txHash);
-        }
-      } catch (e) {}
-    });
-
-    ws.on("error", (err) => {
-      console.error(`[${sourceName}] WS Error:`, err.message);
-    });
-
-    ws.on("close", () => {
-      console.log(`[${sourceName}] WS Closed, reconnecting in 5s...`);
-      setTimeout(() => connectToWs(url, sourceName, headers), 5000);
-    });
-
-    wsProviders.push(ws);
-  } catch (e: any) {
-    console.error(`Failed to connect to ${sourceName}:`, e.message);
-  }
-}
-
-async function switchRpc() {
-  if (isSwitching) return;
-  isSwitching = true;
-  
-  try {
-    await performSwitch();
-  } finally {
-    isSwitching = false;
-  }
-}
-
-async function performSwitch() {
-  if (switchRetries >= RPC_NODES.length) {
-    console.error("All RPC nodes are failing. Waiting before retry...");
-    await new Promise(r => setTimeout(r, 10000));
-    switchRetries = 0;
-    return;
-  }
-  
-  currentRpcIndex = (currentRpcIndex + 1) % RPC_NODES.length;
-  switchRetries++;
-  console.log(`Switching to RPC: ${RPC_NODES[currentRpcIndex]} (Attempt ${switchRetries})`);
-  
-  try {
-    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], bscNetwork, { 
-      staticNetwork: true,
-      batchMaxCount: 1 
-    });
-    // Try to get network to verify it's working with timeout
-    const networkPromise = newProvider.getNetwork();
-    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000));
-    
-    await Promise.race([networkPromise, timeoutPromise]);
-    
-    provider = newProvider;
-    // Re-initialize contracts with new provider
-    pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
-    biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
-    apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, provider);
-    bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
-    console.log("Successfully switched to new RPC");
-    switchRetries = 0; // Reset on success
-  } catch (err: any) {
-    console.error(`Failed to connect to RPC ${RPC_NODES[currentRpcIndex]}: ${err.message}`);
-    await performSwitch();
-  }
-}
-
-// FLASH_LOAN_FEE_BPS: PancakeSwap flash loan fee = 3/997 ≈ 30.09 bps
-// DEX swap fees are already included in getAmountsOut (AMM formula)
-const FLASH_LOAN_FEE_NUMERATOR = 3n;
-const FLASH_LOAN_FEE_DENOMINATOR = 997n;
-
-interface ArbitrageOpportunity {
-  pair: string;
-  buyDex: string;
-  sellDex: string;
-  buyRouter: string;
-  sellRouter: string;
-  netProfitBps: number;
-  roundTripReturn: string;
-  direction: string;
-}
-
 let lastPrices = {
   pancake: "0",
   biswap: "0",
@@ -419,7 +377,6 @@ let lastPrices = {
   babyswap: "0",
   mdex: "0",
   pairs: {} as Record<string, any>,
-  opportunities: [] as ArbitrageOpportunity[],
   timestamp: Date.now()
 };
 
@@ -614,87 +571,10 @@ async function updatePrices() {
     
     if (!success) {
       await switchRpc();
-    } else {
-      // Calculate real arbitrage opportunities after ALL fees for each pair + direction
-      await calculateRealOpportunities(tokenPairs, routers);
     }
   } catch (error: any) {
     console.error("Error updating prices:", error.message);
     await switchRpc();
-  }
-}
-
-// Calculate real net profit (after swap fees + flash loan fee) for every pair × DEX combination
-async function calculateRealOpportunities(
-  tokenPairs: Record<string, [string, string]>,
-  routers: Record<string, string>
-) {
-  const amountIn = ethers.parseEther("1");
-  // Flash loan repayment: amountIn + (amountIn * 3 / 997)
-  const flashFee = (amountIn * FLASH_LOAN_FEE_NUMERATOR) / FLASH_LOAN_FEE_DENOMINATOR;
-  const repayNeeded = amountIn + flashFee;
-
-  const routerEntries = Object.entries(routers);
-  const opportunities: ArbitrageOpportunity[] = [];
-  const readProvider = multicallProvider || provider;
-
-  const checks: Promise<void>[] = [];
-
-  for (const [pairName, [tA, tB]] of Object.entries(tokenPairs)) {
-    for (let i = 0; i < routerEntries.length; i++) {
-      for (let j = 0; j < routerEntries.length; j++) {
-        if (i === j) continue;
-        const [buyDexName, buyRouterAddr] = routerEntries[i];
-        const [sellDexName, sellRouterAddr] = routerEntries[j];
-
-        checks.push((async () => {
-          try {
-            const buyContract = new ethers.Contract(buyRouterAddr, ROUTER_ABI, readProvider);
-            const sellContract = new ethers.Contract(sellRouterAddr, ROUTER_ABI, readProvider);
-
-            // Step 1: buy tB with amountIn tA on buyDex (fees included in AMM)
-            const buyAmounts = await buyContract.getAmountsOut(amountIn, [tA, tB]);
-            const amountOutBuy: bigint = buyAmounts[buyAmounts.length - 1];
-            if (amountOutBuy === 0n) return;
-
-            // Step 2: sell tB back to tA on sellDex (fees included in AMM)
-            const sellAmounts = await sellContract.getAmountsOut(amountOutBuy, [tB, tA]);
-            const finalAmount: bigint = sellAmounts[sellAmounts.length - 1];
-
-            // Step 3: net profit after flash loan fee
-            const netProfit = finalAmount - repayNeeded;
-            if (netProfit <= 0n) return;
-
-            const profitBps = Number((netProfit * 10000n) / amountIn);
-            if (profitBps <= 0) return;
-
-            const roundTripReturn = ethers.formatEther(finalAmount);
-            opportunities.push({
-              pair: pairName,
-              buyDex: buyDexName,
-              sellDex: sellDexName,
-              buyRouter: buyRouterAddr,
-              sellRouter: sellRouterAddr,
-              netProfitBps: profitBps,
-              roundTripReturn,
-              direction: `${buyDexName} → ${sellDexName}`
-            });
-
-            console.log(`💰 [REAL OPPORTUNITY] ${pairName} | ${buyDexName} → ${sellDexName} | Net Profit: ${profitBps} bps after all fees`);
-          } catch (_) {}
-        })());
-      }
-    }
-  }
-
-  // Run all checks in parallel (batched via multicall or parallel promises)
-  await Promise.all(checks);
-
-  // Sort by highest profit first
-  opportunities.sort((a, b) => b.netProfitBps - a.netProfitBps);
-  lastPrices.opportunities = opportunities;
-  if (opportunities.length > 0) {
-    console.log(`✅ Found ${opportunities.length} real opportunity/ies after fees. Best: ${opportunities[0].pair} ${opportunities[0].direction} (${opportunities[0].netProfitBps} bps)`);
   }
 }
 
@@ -729,29 +609,10 @@ app.get("/api/prices", (req, res) => {
 app.post("/api/verify-contract", async (req, res) => {
   const { contractAddress, rpcEndpoint } = req.body;
   if (!contractAddress) return res.json({ verified: false });
-
-  const tryGetCode = async (p: ethers.JsonRpcProvider): Promise<string | null> => {
-    try {
-      const timeout = new Promise<null>((_, r) => setTimeout(() => r(null), 8000));
-      return await Promise.race([p.getCode(contractAddress), timeout]);
-    } catch { return null; }
-  };
-
+  
   try {
-    let code: string | null = null;
-
-    // Try custom RPC first if provided
-    if (rpcEndpoint) {
-      const customProvider = new ethers.JsonRpcProvider(rpcEndpoint, bscNetwork, { staticNetwork: true });
-      code = await tryGetCode(customProvider);
-    }
-
-    // Fallback to the server's working provider
-    if (code === null) {
-      code = await tryGetCode(provider as ethers.JsonRpcProvider);
-    }
-
-    if (code === null) return res.json({ verified: false });
+    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
+    const code = await checkProvider.getCode(contractAddress);
     res.json({ verified: code !== "0x" && code.length > 2 });
   } catch (err) {
     res.json({ verified: false });
