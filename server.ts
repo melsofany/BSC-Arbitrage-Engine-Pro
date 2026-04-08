@@ -729,10 +729,29 @@ app.get("/api/prices", (req, res) => {
 app.post("/api/verify-contract", async (req, res) => {
   const { contractAddress, rpcEndpoint } = req.body;
   if (!contractAddress) return res.json({ verified: false });
-  
+
+  const tryGetCode = async (p: ethers.JsonRpcProvider): Promise<string | null> => {
+    try {
+      const timeout = new Promise<null>((_, r) => setTimeout(() => r(null), 8000));
+      return await Promise.race([p.getCode(contractAddress), timeout]);
+    } catch { return null; }
+  };
+
   try {
-    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
-    const code = await checkProvider.getCode(contractAddress);
+    let code: string | null = null;
+
+    // Try custom RPC first if provided
+    if (rpcEndpoint) {
+      const customProvider = new ethers.JsonRpcProvider(rpcEndpoint, bscNetwork, { staticNetwork: true });
+      code = await tryGetCode(customProvider);
+    }
+
+    // Fallback to the server's working provider
+    if (code === null) {
+      code = await tryGetCode(provider as ethers.JsonRpcProvider);
+    }
+
+    if (code === null) return res.json({ verified: false });
     res.json({ verified: code !== "0x" && code.length > 2 });
   } catch (err) {
     res.json({ verified: false });
