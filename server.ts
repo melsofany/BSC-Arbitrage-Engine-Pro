@@ -5,6 +5,7 @@ import MevShareClient from "@flashbots/mev-share-client";
 import ethersMulticallProvider from "ethers-multicall-provider";
 const { MulticallWrapper } = ethersMulticallProvider;
 import WebSocket from "ws";
+import crypto from "crypto";
 
 console.log("SERVER STARTING - MEV ENGINE ACTIVATED");
 
@@ -12,6 +13,52 @@ const app = express();
 const PORT = 3000;
 
 app.use(express.json());
+
+// ============================================================
+// AUTH SYSTEM — password from APP_PASSWORD env variable
+// ============================================================
+const APP_PASSWORD = process.env.APP_PASSWORD || "";
+const SESSION_SECRET = crypto.randomBytes(32).toString("hex");
+const activeSessions = new Set<string>();
+
+function generateSessionToken(): string {
+  return crypto.randomBytes(32).toString("hex");
+}
+
+function hashToken(token: string): string {
+  return crypto.createHmac("sha256", SESSION_SECRET).update(token).digest("hex");
+}
+
+app.post("/api/auth/login", (req, res) => {
+  const { password } = req.body;
+  if (!APP_PASSWORD) {
+    return res.status(503).json({ error: "APP_PASSWORD environment variable is not set on the server." });
+  }
+  if (!password || password !== APP_PASSWORD) {
+    return res.status(401).json({ error: "كلمة المرور غير صحيحة" });
+  }
+  const token = generateSessionToken();
+  const hashed = hashToken(token);
+  activeSessions.add(hashed);
+  console.log(`[AUTH] New login session created`);
+  res.json({ token });
+});
+
+app.post("/api/auth/logout", (req, res) => {
+  const token = req.headers["x-session-token"] as string || req.body?.token;
+  if (token) {
+    activeSessions.delete(hashToken(token));
+    console.log(`[AUTH] Session removed`);
+  }
+  res.json({ ok: true });
+});
+
+app.get("/api/auth/verify", (req, res) => {
+  const token = req.headers["x-session-token"] as string || (req.query.token as string);
+  if (!token) return res.json({ valid: false });
+  const valid = activeSessions.has(hashToken(token));
+  res.json({ valid });
+});
 
 // Request Logger
 app.use((req, res, next) => {
@@ -268,19 +315,34 @@ let lastPrices = {
   timestamp: Date.now()
 };
 
-// Statistical Arbitrage (Mock CEX Prices)
+// Real CEX Prices from Binance Public API (no key needed)
 let cexPrices: Record<string, string> = {
-  "BNB": "600.00",
-  "ETH": "3500.00",
-  "BTC": "65000.00"
+  "BNB": "0.00",
+  "ETH": "0.00",
+  "BTC": "0.00"
 };
 
-// Update CEX prices periodically (Mock)
-setInterval(() => {
-  cexPrices["BNB"] = (600 + (Math.random() * 10 - 5)).toFixed(2);
-  cexPrices["ETH"] = (3500 + (Math.random() * 50 - 25)).toFixed(2);
-  cexPrices["BTC"] = (65000 + (Math.random() * 500 - 250)).toFixed(2);
-}, 3000);
+async function updateCexPrices() {
+  try {
+    const symbols = ["BNBUSDT", "ETHUSDT", "BTCUSDT"];
+    const query = symbols.map(s => `"${s}"`).join(",");
+    const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbols=[${query}]`);
+    if (!res.ok) return;
+    const data: Array<{ symbol: string; price: string }> = await res.json() as any;
+    for (const item of data) {
+      if (item.symbol === "BNBUSDT") cexPrices["BNB"] = parseFloat(item.price).toFixed(2);
+      if (item.symbol === "ETHUSDT") cexPrices["ETH"] = parseFloat(item.price).toFixed(2);
+      if (item.symbol === "BTCUSDT") cexPrices["BTC"] = parseFloat(item.price).toFixed(2);
+    }
+    console.log(`📈 CEX Prices updated: BNB=$${cexPrices["BNB"]} ETH=$${cexPrices["ETH"]} BTC=$${cexPrices["BTC"]}`);
+  } catch (e: any) {
+    console.warn("Failed to fetch CEX prices from Binance:", e.message);
+  }
+}
+
+// Update every 30 seconds
+setInterval(updateCexPrices, 30000);
+updateCexPrices();
 
 async function checkTriangularArbitrage() {
   const routers = {
@@ -475,20 +537,40 @@ app.post("/api/verify-contract", async (req, res) => {
   }
 });
 
+function normalizePrivateKey(key: string): string {
+  if (!key) return key;
+  const cleaned = key.trim().replace(/\s+/g, "");
+  return cleaned.startsWith("0x") ? cleaned : `0x${cleaned}`;
+}
+
+function isValidPrivateKey(key: string): boolean {
+  try {
+    const normalized = normalizePrivateKey(key);
+    return /^0x[0-9a-fA-F]{64}$/.test(normalized);
+  } catch {
+    return false;
+  }
+}
+
 app.post("/api/wallet-balance", async (req, res) => {
   const { privateKey, rpcEndpoint } = req.body;
   if (!privateKey) return res.json({ balance: "0" });
 
+  const normalizedKey = normalizePrivateKey(privateKey);
+  if (!isValidPrivateKey(normalizedKey)) {
+    return res.json({ balance: "0", error: "Invalid key format. Must be 64 hex characters." });
+  }
+
   try {
     const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
-    const wallet = new ethers.Wallet(privateKey, checkProvider);
+    const wallet = new ethers.Wallet(normalizedKey, checkProvider);
     const balance = await checkProvider.getBalance(wallet.address);
     res.json({ 
       balance: ethers.formatEther(balance),
       address: wallet.address 
     });
-  } catch (err) {
-    res.json({ balance: "0", error: "Invalid Key" });
+  } catch (err: any) {
+    res.json({ balance: "0", error: err.message || "Invalid Key" });
   }
 });
 
@@ -508,8 +590,11 @@ app.post("/api/settings/advanced", async (req, res) => {
     }
     
     if (useMevShare && privateKey) {
-      const signer = new ethers.Wallet(privateKey, provider);
-      await setupMevShare(signer);
+      const normalizedMevKey = normalizePrivateKey(privateKey);
+      if (isValidPrivateKey(normalizedMevKey)) {
+        const signer = new ethers.Wallet(normalizedMevKey, provider);
+        await setupMevShare(signer);
+      }
     }
     
     res.json({ status: "ok", message: "Advanced settings applied" });
@@ -529,7 +614,7 @@ app.get("/api/mev/status", (req, res) => {
 app.post("/api/execute", async (req, res) => {
   const { privateKey, contractAddress, buyDex, sellDex, amount, useFlashLoan: rawUseFlashLoan, loanAmount, loanProvider, pair, minProfit: rawMinProfit } = req.body;
   const useFlashLoan = rawUseFlashLoan === true || rawUseFlashLoan === "true";
-  const minProfitPercent = parseFloat(rawMinProfit || "0.35");
+  const minProfitPercent = parseFloat(rawMinProfit || "0.15");
   const minProfitBps = Math.floor(minProfitPercent * 100);
 
   console.log("--- New Execution Request ---");
@@ -539,10 +624,17 @@ app.post("/api/execute", async (req, res) => {
     return res.status(400).json({ error: "Missing private key or contract address" });
   }
 
+  const normalizedPK = normalizePrivateKey(privateKey);
+  if (!isValidPrivateKey(normalizedPK)) {
+    return res.status(400).json({ 
+      error: "Invalid private key format. Make sure it is 64 hex characters (with or without 0x prefix)." 
+    });
+  }
+
   console.log(`Executing trade: ${buyDex} -> ${sellDex} | Pair: ${pair} | Amount: ${amount} | FlashLoan: ${useFlashLoan} | Loan: ${loanAmount} ${loanProvider}`);
 
   try {
-    const wallet = new ethers.Wallet(privateKey, provider);
+    const wallet = new ethers.Wallet(normalizedPK, provider);
     
     // Verify contract address has code
     const code = await provider.getCode(contractAddress);
@@ -587,8 +679,8 @@ app.post("/api/execute", async (req, res) => {
     const buyDexKey = buyDex.toLowerCase().replace("swap", "");
     const sellDexKey = sellDex.toLowerCase().replace("swap", "");
     
-    const buyRouterAddr = routers[buyDexKey] || routers[buyDex.toLowerCase()];
-    const sellRouterAddr = routers[sellDexKey] || routers[sellDex.toLowerCase()];
+    let buyRouterAddr = routers[buyDexKey] || routers[buyDex.toLowerCase()];
+    let sellRouterAddr = routers[sellDexKey] || routers[sellDex.toLowerCase()];
 
     if (!buyRouterAddr || !sellRouterAddr) {
       console.error(`Router not found for: ${buyDex} or ${sellDex}`);
@@ -660,14 +752,19 @@ app.post("/api/execute", async (req, res) => {
         - Buy ${buyDex} -> Sell ${sellDex}: ${ethers.formatUnits(buyOnBuySellOnSell, decimalsA)} ${pair.split('/')[0]}
         - Buy ${sellDex} -> Sell ${buyDex}: ${ethers.formatUnits(buyOnSellSellOnBuy, decimalsA)} ${pair.split('/')[0]}`);
 
-        if (buyOnBuySellOnSell > buyOnSellSellOnBuy) {
+        if (buyOnBuySellOnSell >= buyOnSellSellOnBuy) {
+          // Original direction is better: buy on buyDex, sell on sellDex
           borrowToken = tokenA;
           outToken = tokenB;
           borrowDecimals = decimalsA;
           outDecimals = decimalsB;
+          console.log(`✅ Direction confirmed: Buy on ${buyDex}, Sell on ${sellDex}`);
         } else {
-          // If the other direction is better, we should probably use that
-          // but for now we stick to the user's chosen DEXes and just ensure token order
+          // REVERSE direction is more profitable — swap the routers automatically
+          console.log(`🔄 Auto-reversing direction: Buy on ${sellDex} is better. Swapping routers.`);
+          const tmpRouter = buyRouterAddr;
+          buyRouterAddr = sellRouterAddr;
+          sellRouterAddr = tmpRouter;
           borrowToken = tokenA;
           outToken = tokenB;
           borrowDecimals = decimalsA;
@@ -787,10 +884,10 @@ app.post("/api/execute", async (req, res) => {
       - Current Amount Spread: ${profitBps} bps (after slippage)`);
 
       // CRITICAL: Early exit if theoretical spread is too low
-      if (maxPossibleBps < 30n) {
-        console.log(`🛑 Max Theoretical Spread (${maxPossibleBps} bps) is below 30 bps. Aborting to save CPU cycles.`);
+      if (maxPossibleBps < 10n) {
+        console.log(`🛑 Max Theoretical Spread (${maxPossibleBps} bps) is below 10 bps. Aborting to save CPU cycles.`);
         return res.status(400).json({ 
-          error: `Trade is not profitable enough even theoretically. Theoretical profit: ${maxPossibleBps} bps, required: 30 bps.` 
+          error: `Trade is not profitable enough even theoretically. Theoretical profit: ${maxPossibleBps} bps, required: 10 bps.` 
         });
       }
 
@@ -1004,6 +1101,151 @@ app.post("/api/execute", async (req, res) => {
   } catch (error: any) {
     console.error("Execution error:", error);
     res.status(500).json({ error: error.message || "Transaction failed" });
+  }
+});
+
+// ============================================================
+// SMART OPPORTUNITY SCANNER - يمسح جميع الأزواج تلقائياً
+// ============================================================
+interface OpportunityResult {
+  pair: string;
+  buyDex: string;
+  sellDex: string;
+  buyPrice: number;
+  sellPrice: number;
+  spreadBps: number;
+  spreadPercent: number;
+  type: "direct" | "triangular";
+}
+
+let lastScanResults: OpportunityResult[] = [];
+let lastScanTime = 0;
+
+async function runOpportunityScanner(): Promise<OpportunityResult[]> {
+  const results: OpportunityResult[] = [];
+  const amountIn = ethers.parseEther("1");
+
+  const tokenPairs: Record<string, [string, string]> = {
+    "BNB/USDT":  [WBNB, USDT],
+    "BNB/BUSD":  [WBNB, BUSD],
+    "ETH/BNB":   [ETH,  WBNB],
+    "CAKE/BNB":  [CAKE, WBNB],
+    "BTCB/BNB":  [BTCB, WBNB],
+    "ADA/BNB":   [ADA,  WBNB],
+    "DOT/BNB":   [DOT,  WBNB],
+    "XRP/BNB":   [XRP,  WBNB],
+    "DOGE/BNB":  ["0xba2ae424d960c26247dd6c32edc70b295c744c43", WBNB],
+    "MATIC/BNB": ["0xcc42724c6683b7e57334c4e856f4c9965ed682bd", WBNB],
+  };
+
+  const dexRouters: Record<string, any> = {
+    "PancakeSwap": pancakeContract,
+    "BiSwap":      biswapContract,
+    "ApeSwap":     apeswapContract,
+    "BabySwap":    babyswapContract,
+    "MDEX":        mdexContract,
+  };
+
+  for (const [pairName, [tokenA, tokenB]] of Object.entries(tokenPairs)) {
+    const prices: Record<string, number> = {};
+
+    await Promise.all(
+      Object.entries(dexRouters).map(async ([dexName, router]) => {
+        try {
+          const amounts = await router.getAmountsOut(amountIn, [tokenA, tokenB]);
+          const out = amounts[amounts.length - 1];
+          prices[dexName] = parseFloat(ethers.formatUnits(out, 18));
+        } catch (_) {
+          prices[dexName] = 0;
+        }
+      })
+    );
+
+    const validEntries = Object.entries(prices).filter(([, p]) => p > 0);
+    if (validEntries.length < 2) continue;
+
+    const sorted = [...validEntries].sort(([, a], [, b]) => a - b);
+    const [buyDex, buyPrice] = sorted[0];
+    const [sellDex, sellPrice] = sorted[sorted.length - 1];
+
+    if (buyPrice <= 0) continue;
+
+    const spreadPercent = ((sellPrice - buyPrice) / buyPrice) * 100;
+    const spreadBps = Math.round(spreadPercent * 100);
+
+    if (spreadBps > 5) {
+      results.push({
+        pair: pairName,
+        buyDex,
+        sellDex,
+        buyPrice,
+        sellPrice,
+        spreadBps,
+        spreadPercent,
+        type: "direct",
+      });
+    }
+  }
+
+  // Triangular check on PancakeSwap
+  const triPaths: Array<{ name: string; path: string[] }> = [
+    { name: "BNB→BUSD→USDT→BNB",  path: [WBNB, BUSD, USDT, WBNB] },
+    { name: "BNB→CAKE→BUSD→BNB",  path: [WBNB, CAKE, BUSD, WBNB] },
+    { name: "BNB→ETH→BUSD→BNB",   path: [WBNB, ETH,  BUSD, WBNB] },
+    { name: "BNB→BTCB→BUSD→BNB",  path: [WBNB, BTCB, BUSD, WBNB] },
+  ];
+
+  for (const { name, path } of triPaths) {
+    try {
+      const amounts = await pancakeContract.getAmountsOut(amountIn, path);
+      const out = amounts[amounts.length - 1];
+      const profit = out - amountIn;
+      const spreadBps = Number((profit * 10000n) / amountIn);
+      if (spreadBps > 5) {
+        results.push({
+          pair: name,
+          buyDex: "PancakeSwap",
+          sellDex: "PancakeSwap",
+          buyPrice: 1,
+          sellPrice: parseFloat(ethers.formatEther(out)),
+          spreadBps,
+          spreadPercent: spreadBps / 100,
+          type: "triangular",
+        });
+      }
+    } catch (_) {}
+  }
+
+  // Sort by best spread
+  results.sort((a, b) => b.spreadBps - a.spreadBps);
+  return results.slice(0, 15);
+}
+
+// Run scanner every 15 seconds
+setInterval(async () => {
+  try {
+    lastScanResults = await runOpportunityScanner();
+    lastScanTime = Date.now();
+    if (lastScanResults.length > 0) {
+      console.log(`🔍 Scanner found ${lastScanResults.length} opportunities. Best: ${lastScanResults[0].pair} | ${lastScanResults[0].spreadBps} bps`);
+    }
+  } catch (e: any) {
+    console.error("Scanner error:", e.message);
+  }
+}, 15000);
+
+app.get("/api/scan-opportunities", async (req, res) => {
+  try {
+    // If cached result is fresh (< 20s), return it immediately
+    if (Date.now() - lastScanTime < 20000 && lastScanResults.length >= 0) {
+      return res.json({ opportunities: lastScanResults, scannedAt: lastScanTime });
+    }
+    // Otherwise run fresh scan
+    lastScanResults = await runOpportunityScanner();
+    lastScanTime = Date.now();
+    res.json({ opportunities: lastScanResults, scannedAt: lastScanTime });
+  } catch (e: any) {
+    res.status(500).json({ error: e.message });
   }
 });
 
