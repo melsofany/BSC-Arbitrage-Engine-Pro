@@ -142,8 +142,25 @@ async function effectivePriceAfterFees(amountIn: bigint, path: string[], router:
   }
 }
 
+// Dedup set and throttle for mempool analysis
+const recentTxHashes = new Set<string>();
+let lastMempoolAnalysis = 0;
+const MEMPOOL_ANALYSIS_THROTTLE_MS = 5000;
+
 // Mempool Listener for MEV with Rotation
 async function analyzePendingTx(txHash: string) {
+  // Deduplicate: skip already-seen transactions
+  if (recentTxHashes.has(txHash)) return;
+  recentTxHashes.add(txHash);
+  if (recentTxHashes.size > 200) {
+    const first = recentTxHashes.values().next().value;
+    if (first) recentTxHashes.delete(first);
+  }
+  // Throttle: max one full getTransaction() call per 5 seconds across all pending txs
+  const nowMs = Date.now();
+  if (nowMs - lastMempoolAnalysis < MEMPOOL_ANALYSIS_THROTTLE_MS) return;
+  lastMempoolAnalysis = nowMs;
+
   try {
     const tx = await provider.getTransaction(txHash);
     if (!tx || !tx.to || !tx.data) return;
@@ -168,8 +185,7 @@ async function analyzePendingTx(txHash: string) {
           } catch (e) {}
         }
         
-        // Trigger immediate price check for the involved tokens
-        setTimeout(updatePrices, 50); 
+        // Note: do not trigger price update here - handled by scheduled interval
       }
     }
   } catch (e) {}
@@ -304,9 +320,18 @@ setInterval(() => {
   cexPrices["BNB"] = (600 + (Math.random() * 10 - 5)).toFixed(2);
   cexPrices["ETH"] = (3500 + (Math.random() * 50 - 25)).toFixed(2);
   cexPrices["BTC"] = (65000 + (Math.random() * 500 - 250)).toFixed(2);
-}, 5000);
+}, 60000); // Update mock CEX prices every 60s instead of every 5s
 
-async function updatePrices() {
+// Cache for pair addresses (expensive to fetch every time)
+  let pairAddressCache: Record<string, string> = {};
+  let pairAddressCacheTime = 0;
+
+  // Throttle: prevent concurrent updatePrices calls
+  let isUpdatingPrices = false;
+
+  async function updatePrices() {
+    if (isUpdatingPrices) return; // Skip if already running
+    isUpdatingPrices = true;
   try {
     // Use multicall for efficient price fetching
     const amountIn = ethers.parseEther("1");
@@ -373,13 +398,16 @@ async function updatePrices() {
 
   } catch (e: any) {
     console.error("Price update failed:", e.message);
-    if (e.message.includes("429") || e.message.includes("timeout") || e.message.includes("failed")) {
+    if (e.message.includes("429") || e.message.includes("-32005") || e.message.includes("403") ||
+        e.message.includes("rate limit") || e.message.includes("Forbidden") ||
+        e.message.includes("timeout") || e.message.includes("SERVER_ERROR")) {
+      console.log("Rate limit/RPC error detected, switching RPC...");
       switchRpc();
     }
   }
 }
 
-setInterval(updatePrices, 3000);
+setInterval(updatePrices, 15000);
 
 // MEV Share Setup
 async function setupMevShare(signer: ethers.Wallet) {
