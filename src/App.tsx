@@ -261,7 +261,7 @@ export default function App() {
   });
   const [privateKey, setPrivateKey] = useState(() => localStorage.getItem("arb_pk") || "");
   const [contractAddress, setContractAddress] = useState(() => localStorage.getItem("arb_ca") || "");
-  const [rpcEndpoint, setRpcEndpoint] = useState(() => localStorage.getItem("arb_rpc") || "https://bsc-dataseed.binance.org/");
+  const [rpcEndpoint, setRpcEndpoint] = useState(() => localStorage.getItem("arb_rpc") || "https://bsc-rpc.publicnode.com");
   const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.35");
   const [maxGas, setMaxGas] = useState(() => localStorage.getItem("arb_max_gas") || "5");
   const [showPrivateKey, setShowPrivateKey] = useState(false);
@@ -340,7 +340,7 @@ export default function App() {
 
   useEffect(() => {
     const verify = async () => {
-      if (!contractAddress || !rpcEndpoint) {
+      if (!contractAddress) {
         setIsContractVerified(false);
         return;
       }
@@ -348,7 +348,7 @@ export default function App() {
         const res = await fetch("/api/verify-contract", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ contractAddress, rpcEndpoint })
+          body: JSON.stringify({ contractAddress, rpcEndpoint: rpcEndpoint || undefined })
         });
         if (!res.ok) return;
         const contentType = res.headers.get("content-type");
