@@ -27,17 +27,22 @@ let privateRpcProvider: ethers.JsonRpcProvider | null = null;
 let multicallProvider: any = null;
 let wsProviders: WebSocket[] = [];
 
-// BSC RPC URLs - Using multiple fallbacks for reliability
+// BSC RPC URLs - Reliable nodes for cloud-hosted environments (no Binance dataseed which blocks cloud IPs)
 const RPC_NODES = [
-  "https://bsc-dataseed.binance.org/",
   "https://bsc-rpc.publicnode.com",
   "https://rpc.ankr.com/bsc",
-  "https://bsc-dataseed1.defibit.io/"
+  "https://bsc-dataseed1.defibit.io/",
+  "https://bsc-dataseed2.defibit.io/",
+  "https://bsc-dataseed3.defibit.io/",
+  "https://bsc-dataseed4.defibit.io/",
+  "https://bsc-dataseed1.ninicoin.io/",
+  "https://bsc-dataseed2.ninicoin.io/",
+  "https://bsc.meowrpc.com",
+  "https://bsc.drpc.org"
 ];
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://bsc-dataseed.binance.org",
   "wss://rpc.ankr.com/bsc/ws"
 ];
 
