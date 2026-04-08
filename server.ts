@@ -29,7 +29,7 @@ let wsProviders: WebSocket[] = [];
 
 // BSC RPC URLs - Using multiple fallbacks for reliability
 const RPC_NODES = [
-  "https://bsc-dataseed.binance.org/",
+  process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org/",
   "https://bsc-dataseed1.defibit.io/",
   "https://bsc-dataseed1.ninicoin.io/",
   "https://bsc-rpc.publicnode.com"
