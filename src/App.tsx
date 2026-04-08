@@ -262,14 +262,14 @@ export default function App() {
   const [privateKey, setPrivateKey] = useState(() => localStorage.getItem("arb_pk") || "");
   const [contractAddress, setContractAddress] = useState(() => localStorage.getItem("arb_ca") || "");
   const [rpcEndpoint, setRpcEndpoint] = useState(() => localStorage.getItem("arb_rpc") || "https://bsc-dataseed.binance.org/");
-  const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.35");
+  const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.1");
   const [maxGas, setMaxGas] = useState(() => localStorage.getItem("arb_max_gas") || "5");
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [isContractVerified, setIsContractVerified] = useState(false);
   const [walletBalance, setWalletBalance] = useState<string | null>(null);
 
   const filteredOpportunities = useMemo(() => {
-    const threshold = parseFloat(minProfit) || 0.5;
+    const threshold = parseFloat(minProfit) || 0.1;
     return opportunities.filter(opp => (opp.profit / opp.buyPrice * 100) >= threshold);
   }, [opportunities, minProfit]);
 

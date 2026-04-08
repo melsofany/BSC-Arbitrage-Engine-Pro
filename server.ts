@@ -3,6 +3,7 @@ import path from "path";
 import { ethers } from "ethers";
 import MevShareClient from "@flashbots/mev-share-client";
 import ethersMulticallProvider from "ethers-multicall-provider";
+import { analyzeOpportunitiesWithAI } from "./ai_analyzer";
 const { MulticallWrapper } = ethersMulticallProvider;
 import WebSocket from "ws";
 
@@ -228,6 +229,8 @@ const APESWAP_ROUTER = ethers.getAddress("0xcf0febd3f17cef5b47b0cd257acf6025c5bf
 const BAKERY_ROUTER = ethers.getAddress("0xcde540d7eafe93ac5fe6233bee57e1270d3e330f".toLowerCase());
 const BABYSWAP_ROUTER = ethers.getAddress("0x325e343f1de2356f596938ac336224c33554444b".toLowerCase());
 const MDEX_ROUTER = ethers.getAddress("0x7dae51bd3df1541f4846fb9452375937d8357336".toLowerCase());
+const NOMISWAP_ROUTER = ethers.getAddress("0x858e3312ed3a8762e0101bb5c46a8c1ed44dc160".toLowerCase());
+const THE_ROUTER = ethers.getAddress("0x2aa0e3698848fd2d1502404bc486393980393292".toLowerCase());
 
 const PANCAKE_FACTORY = ethers.getAddress("0xca143ce32fe78f1f7019d7d551a6402fc5350c73".toLowerCase());
 const BISWAP_FACTORY = ethers.getAddress("0x858e3312ed3a8762e0101bb5c46a8c1ed44dc160".toLowerCase());
@@ -306,9 +309,9 @@ async function checkTriangularArbitrage() {
         const profit = amountOut - amountIn;
         const profitBps = (profit * 10000n) / amountIn;
 
-        if (profitBps > 15n) { // 0.15% profit threshold for triangle (after fees)
+        if (profitBps > 5n) { // Lowered to 0.05% for high-volume triangular arbitrage
           console.log(`💎 Triangular Opportunity on ${name}: ${profitBps} bps | Path: ${path.join(" -> ")}`);
-          // In a real scenario, we would trigger execution here if automated
+          // AI could further validate this
         }
       } catch (e) {}
     }
@@ -347,6 +350,20 @@ async function updatePrices() {
   checkTriangularArbitrage();
   checkLiquidityImbalance();
   
+  // AI Analysis (Every 30 seconds to save API credits)
+  if (Date.now() % 30000 < 5000) {
+    analyzeOpportunitiesWithAI({
+      pairs: lastPrices.pairs,
+      mempoolActivity: [], // Could be populated from analyzePendingTx
+      cexPrices: cexPrices
+    }).then(aiOpps => {
+      if (aiOpps && aiOpps.length > 0) {
+        console.log("🤖 AI Detected Opportunities:", aiOpps);
+        // Logic to merge AI opportunities could be added here
+      }
+    });
+  }
+  
   const amountIn = ethers.parseEther("1"); // 1 BNB
   const tokenPairs: Record<string, [string, string]> = {
     "WBNB/BUSD": [WBNB, BUSD],
@@ -363,7 +380,10 @@ async function updatePrices() {
     "SHIB/BNB": ["0x2859e4544C4bB03966803b044A93563Bd2D0DD4D", WBNB],
     "DOGE/BNB": ["0xba2ae424d960c26247dd6c32edc70b295c744c43", WBNB],
     "MATIC/BNB": ["0xcc42724c6683b7e57334c4e856f4c9965ed682bd", WBNB],
-    "AVAX/BNB": ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB]
+    "AVAX/BNB": ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB],
+    "SOL/BNB": ["0x570a5d26f7765ecb712c0924e4de545b89fd43df", WBNB],
+    "TRX/BNB": ["0x85e0e343f1de2356f596938ac336224c33554444b", WBNB],
+    "UNI/BNB": ["0xbf5140a22578168fd562dccf235e5d43a02ce9b1", WBNB]
   };
 
   const routers = {
@@ -372,7 +392,9 @@ async function updatePrices() {
     apeswap: APESWAP_ROUTER,
     bakeryswap: BAKERY_ROUTER,
     babyswap: BABYSWAP_ROUTER,
-    mdex: MDEX_ROUTER
+    mdex: MDEX_ROUTER,
+    nomiswap: NOMISWAP_ROUTER,
+    thena: THE_ROUTER
   };
 
   let success = false;
