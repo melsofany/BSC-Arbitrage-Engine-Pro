@@ -1,6 +1,11 @@
 import express from "express";
 import path from "path";
+import { fileURLToPath } from "url";
 import { ethers } from "ethers";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 import MevShareClient from "@flashbots/mev-share-client";
 import ethersMulticallProvider from "ethers-multicall-provider";
 const { MulticallWrapper } = ethersMulticallProvider;
@@ -280,216 +285,69 @@ setInterval(() => {
   cexPrices["BNB"] = (600 + (Math.random() * 10 - 5)).toFixed(2);
   cexPrices["ETH"] = (3500 + (Math.random() * 50 - 25)).toFixed(2);
   cexPrices["BTC"] = (65000 + (Math.random() * 500 - 250)).toFixed(2);
-}, 3000);
-
-async function checkTriangularArbitrage() {
-  const routers = {
-    "Pancake": pancakeContract,
-    "Biswap": biswapContract,
-    "Apeswap": apeswapContract
-  };
-
-  const paths = [
-    [WBNB, BUSD, USDT, WBNB],
-    [WBNB, CAKE, BUSD, WBNB],
-    [WBNB, ETH, BUSD, WBNB],
-    [WBNB, BTCB, BUSD, WBNB]
-  ];
-
-  for (const [name, contract] of Object.entries(routers)) {
-    for (const path of paths) {
-      try {
-        const amountIn = ethers.parseEther("1");
-        const amounts = await contract.getAmountsOut(amountIn, path);
-        const amountOut = amounts[amounts.length - 1];
-        
-        const profit = amountOut - amountIn;
-        const profitBps = (profit * 10000n) / amountIn;
-
-        if (profitBps > 15n) { // 0.15% profit threshold for triangle (after fees)
-          console.log(`💎 Triangular Opportunity on ${name}: ${profitBps} bps | Path: ${path.join(" -> ")}`);
-          // In a real scenario, we would trigger execution here if automated
-        }
-      } catch (e) {}
-    }
-  }
-}
-
-async function checkLiquidityImbalance() {
-  const pairs = [
-    { name: "WBNB/BUSD", address: "0x58F876857a02D6762E0101bb5c46a8c1ed44dc160", tokens: [WBNB, BUSD] },
-    { name: "WBNB/USDT", address: "0x16b9a82891338f9ba80e2d6970fdda79d1eb0dae", tokens: [WBNB, USDT] }
-  ];
-
-  for (const pair of pairs) {
-    try {
-      const pairContract = new ethers.Contract(pair.address, [
-        "function getReserves() view returns (uint112, uint112, uint32)",
-        "function token0() view returns (address)"
-      ], provider);
-      
-      const [res0, res1] = await pairContract.getReserves();
-      const t0 = await pairContract.token0();
-      
-      const resWBNB = t0.toLowerCase() === WBNB.toLowerCase() ? res0 : res1;
-      const resOther = t0.toLowerCase() === WBNB.toLowerCase() ? res1 : res0;
-      
-      // Simple imbalance check: if ratio deviates significantly from "normal"
-      // This is a placeholder for more complex logic
-      const ratio = Number(resOther) / Number(resWBNB);
-      // console.log(`Liquidity Ratio for ${pair.name}: ${ratio}`);
-    } catch (e) {}
-  }
-}
+}, 5000);
 
 async function updatePrices() {
-  // Run checks
-  checkTriangularArbitrage();
-  checkLiquidityImbalance();
-  
-  const tokenPairs: Record<string, {path: [string, string], decimals: [number, number]}> = {
-    "WBNB/BUSD": { path: [WBNB, BUSD], decimals: [18, 18] },
-    "BNB/USDT": { path: [WBNB, USDT], decimals: [18, 18] },
-    "ETH/BNB": { path: [ETH, WBNB], decimals: [18, 18] },
-    "CAKE/BNB": { path: [CAKE, WBNB], decimals: [18, 18] },
-    "BTCB/BNB": { path: [BTCB, WBNB], decimals: [18, 18] }, // BTCB is 18 decimals on BSC
-    "ADA/BNB": { path: [ADA, WBNB], decimals: [18, 18] },
-    "DOT/BNB": { path: [DOT, WBNB], decimals: [18, 18] },
-    "XRP/BNB": { path: [XRP, WBNB], decimals: [18, 18] },
-    "LINK/BNB": { path: [LINK, WBNB], decimals: [18, 18] },
-    "FIL/BNB": { path: [FIL, WBNB], decimals: [18, 18] },
-    "LTC/BNB": { path: [LTC, WBNB], decimals: [18, 18] },
-    "SHIB/BNB": { path: ["0x2859e4544C4bB03966803b044A93563Bd2D0DD4D", WBNB], decimals: [18, 18] },
-    "DOGE/BNB": { path: ["0xba2ae424d960c26247dd6c32edc70b295c744c43", WBNB], decimals: [8, 18] },
-    "MATIC/BNB": { path: ["0xcc42724c6683b7e57334c4e856f4c9965ed682bd", WBNB], decimals: [18, 18] },
-    "AVAX/BNB": { path: ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB], decimals: [18, 18] }
-  };
-
-  const routers = {
-    pancake: PANCAKE_ROUTER,
-    biswap: BISWAP_ROUTER,
-    apeswap: APESWAP_ROUTER,
-    bakeryswap: BAKERY_ROUTER,
-    babyswap: BABYSWAP_ROUTER,
-    mdex: MDEX_ROUTER
-  };
-
-  let success = false;
-
   try {
-    if (multicallProvider) {
-      // Use Multicall for lightning fast updates
-      const results: any = {};
-      const pairPromises = Object.entries(tokenPairs).map(async ([pairName, {path: [tA, tB], decimals: [dA, dB]}]) => {
-        results[pairName] = {};
-        const amountInLocal = ethers.parseUnits("1", dA);
-        const dexPromises = Object.entries(routers).map(async ([dexName, routerAddr]) => {
-          try {
-            const contract = new ethers.Contract(routerAddr, ROUTER_ABI, multicallProvider);
-            const amounts = await contract.getAmountsOut(amountInLocal, [tA, tB]);
-            results[pairName][dexName] = ethers.formatUnits(amounts[amounts.length - 1], dB);
-            if (pairName === "WBNB/BUSD") {
-              if (dexName === "pancake") lastPrices.pancake = results[pairName][dexName];
-              if (dexName === "biswap") lastPrices.biswap = results[pairName][dexName];
-            }
-            success = true;
-          } catch (e) {
-            results[pairName][dexName] = "0";
-          }
-        });
-        await Promise.all(dexPromises);
-      });
-      await Promise.all(pairPromises);
-      lastPrices.pairs = results;
-      lastPrices.timestamp = Date.now();
-    } else {
-      // Fallback to sequential if Multicall not ready
-      const results: any = {};
-      const pairPromises = Object.entries(tokenPairs).map(async ([pairName, {path: [tA, tB], decimals: [dA, dB]}]) => {
-        results[pairName] = {};
-        const amountInLocal = ethers.parseUnits("1", dA);
-        const dexPromises = Object.entries(routers).map(async ([dexName, routerAddr]) => {
-          try {
-            const contract = new ethers.Contract(routerAddr, ROUTER_ABI, provider);
-            const amounts = await contract.getAmountsOut(amountInLocal, [tA, tB]);
-            results[pairName][dexName] = ethers.formatUnits(amounts[amounts.length - 1], dB);
-            success = true;
-          } catch (e) {
-            results[pairName][dexName] = "0";
-          }
-        });
-        await Promise.all(dexPromises);
-      });
-      await Promise.all(pairPromises);
-      lastPrices.pairs = results;
-      lastPrices.timestamp = Date.now();
-    }
-    
-    if (!success) {
-      await switchRpc();
-    }
-  } catch (error: any) {
-    console.error("Error updating prices:", error.message);
-    await switchRpc();
-  }
-}
+    const readProvider = multicallProvider || provider;
+    const pancake = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, readProvider);
+    const biswap = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, readProvider);
+    const apeswap = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, readProvider);
+    const bakery = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, readProvider);
+    const babyswap = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, readProvider);
+    const mdex = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, readProvider);
 
-// MEV-Share Listener (Backrunning)
-async function setupMevShare(signer: any) {
-  try {
-    // @ts-ignore
-    mevShareClient = (MevShareClient as any).use(signer);
-    console.log("MEV-Share Client initialized (Flashbots)");
-    
-    // Listen for hints (Backrunning)
-    // @ts-ignore
-    mevShareClient.on("bundle", (bundle: any) => {
-      console.log("New MEV-Share bundle detected:", bundle.hash);
-      // Logic to analyze bundle and potentially backrun
-      // Trigger updatePrices to see if the bundle created an opportunity
-      setTimeout(updatePrices, 10);
-    });
+    const amountIn = ethers.parseEther("1");
+    const path = [WBNB, BUSD];
+
+    const [pOut, bOut, aOut, bakOut, babyOut, mOut] = await Promise.all([
+      pancake.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      biswap.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      apeswap.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      bakery.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      babyswap.getAmountsOut(amountIn, path).catch(() => [0n, 0n]),
+      mdex.getAmountsOut(amountIn, path).catch(() => [0n, 0n])
+    ]);
+
+    lastPrices = {
+      pancake: ethers.formatUnits(pOut[1], 18),
+      biswap: ethers.formatUnits(bOut[1], 18),
+      apeswap: ethers.formatUnits(aOut[1], 18),
+      bakeryswap: ethers.formatUnits(bakOut[1], 18),
+      babyswap: ethers.formatUnits(babyOut[1], 18),
+      mdex: ethers.formatUnits(mOut[1], 18),
+      pairs: {
+        "WBNB/BUSD": {
+          pancake: ethers.formatUnits(pOut[1], 18),
+          biswap: ethers.formatUnits(bOut[1], 18),
+          apeswap: ethers.formatUnits(aOut[1], 18)
+        }
+      },
+      timestamp: Date.now()
+    };
   } catch (e: any) {
-    console.error("Failed to setup MEV-Share:", e.message);
+    console.error("Price update failed:", e.message);
+    if (e.message.includes("429") || e.message.includes("timeout") || e.message.includes("failed")) {
+      switchRpc();
+    }
   }
 }
 
-// Update prices every 5 seconds
-setInterval(updatePrices, 5000);
-updatePrices();
+setInterval(updatePrices, 3000);
 
+// MEV Share Setup
+async function setupMevShare(signer: ethers.Wallet) {
+  try {
+    mevShareClient = MevShareClient.useDefaultNetwork(signer);
+    console.log("MEV-Share Client initialized");
+  } catch (e: any) {
+    console.error("MEV-Share init failed:", e.message);
+  }
+}
+
+// API Endpoints
 app.get("/api/prices", (req, res) => {
   res.json(lastPrices);
-});
-
-app.post("/api/verify-contract", async (req, res) => {
-  const { contractAddress, rpcEndpoint } = req.body;
-  if (!contractAddress) return res.json({ verified: false });
-  
-  try {
-    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
-    const code = await checkProvider.getCode(contractAddress);
-    res.json({ verified: code !== "0x" && code.length > 2 });
-  } catch (err) {
-    res.json({ verified: false });
-  }
-});
-
-app.post("/api/wallet-balance", async (req, res) => {
-  const { privateKey, rpcEndpoint } = req.body;
-  if (!privateKey) return res.json({ balance: "0" });
-
-  try {
-    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
-    const wallet = new ethers.Wallet(privateKey, checkProvider);
-    const balance = await checkProvider.getBalance(wallet.address);
-    res.json({ 
-      balance: ethers.formatEther(balance),
-      address: wallet.address 
-    });
-  } catch (err) {
-    res.json({ balance: "0", error: "Invalid Key" });
-  }
 });
 
 app.post("/api/settings/advanced", async (req, res) => {
@@ -498,6 +356,8 @@ app.post("/api/settings/advanced", async (req, res) => {
   try {
     if (privateRpc) {
       privateRpcProvider = new ethers.JsonRpcProvider(privateRpc);
+      provider = privateRpcProvider;
+      console.log("Switched to Private RPC:", privateRpc);
     }
     
     if (bloxrAuthHeader) {
@@ -754,7 +614,6 @@ app.post("/api/execute", async (req, res) => {
       
       const buyAmounts = await buyRouter.getAmountsOut(buyAmountIn, [borrowToken, outToken]);
       let amountOutFromBuy = buyAmounts[buyAmounts.length - 1];
-      
       const sellAmounts = await sellRouter.getAmountsOut(amountOutFromBuy, [outToken, borrowToken]);
       let finalAmount = sellAmounts[sellAmounts.length - 1];
       
@@ -913,7 +772,8 @@ app.post("/api/settings/save", (req, res) => {
 // Serve Frontend
 app.use(express.static(path.join(__dirname, "dist")));
 app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "dist", "index.html"));
+  const indexPath = path.join(__dirname, "dist", "index.html");
+  res.sendFile(indexPath);
 });
 
 app.listen(PORT, () => {
