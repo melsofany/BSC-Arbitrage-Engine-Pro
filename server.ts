@@ -359,8 +359,9 @@ async function updatePrices() {
     }).then(aiOpps => {
       if (aiOpps && aiOpps.length > 0) {
         console.log("🤖 AI Detected Opportunities:", aiOpps);
-        // Logic to merge AI opportunities could be added here
       }
+    }).catch(err => {
+      console.error("AI Analysis skipped or failed:", err.message);
     });
   }
   

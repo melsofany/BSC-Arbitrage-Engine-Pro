@@ -1,10 +1,18 @@
 import { OpenAI } from "openai";
 
-// Initialize OpenAI client for DeepSeek or GPT-4
-const client = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-  baseURL: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
-});
+// Initialize OpenAI client only if API key is provided
+const apiKey = process.env.OPENAI_API_KEY;
+let client: OpenAI | null = null;
+
+if (apiKey) {
+  client = new OpenAI({
+    apiKey: apiKey,
+    baseURL: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
+  });
+  console.log("🤖 AI Analyzer initialized with OpenAI/DeepSeek");
+} else {
+  console.warn("⚠️ AI Analyzer: OPENAI_API_KEY is missing. AI features will be disabled, but the server will continue to run.");
+}
 
 export interface MarketState {
   pairs: Record<string, Record<string, string>>;
@@ -13,6 +21,11 @@ export interface MarketState {
 }
 
 export async function analyzeOpportunitiesWithAI(state: MarketState) {
+  if (!client) {
+    // Return empty if AI is not configured
+    return [];
+  }
+
   try {
     const prompt = `
     Analyze the following BSC market state for arbitrage opportunities.
@@ -31,7 +44,7 @@ export async function analyzeOpportunitiesWithAI(state: MarketState) {
     `;
 
     const response = await client.chat.completions.create({
-      model: "gpt-4.1-mini", // Using available model
+      model: "gpt-4.1-mini",
       messages: [
         { role: "system", content: "You are an expert MEV and Arbitrage analyst on BSC." },
         { role: "user", content: prompt }
