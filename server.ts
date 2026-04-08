@@ -29,13 +29,16 @@ let wsProviders: WebSocket[] = [];
 
 // BSC RPC URLs - Using multiple fallbacks for reliability
 const RPC_NODES = [
-  "https://bsc-dataseed.binance.org",
+  "https://bsc-dataseed.binance.org/",
   "https://bsc-rpc.publicnode.com",
-  "https://binance.llamarpc.com"
+  "https://rpc.ankr.com/bsc",
+  "https://bsc-dataseed1.defibit.io/"
 ];
 
 const WS_NODES = [
-  "wss://bsc-rpc.publicnode.com"
+  "wss://bsc-rpc.publicnode.com",
+  "wss://bsc-dataseed.binance.org",
+  "wss://rpc.ankr.com/bsc/ws"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -45,10 +48,44 @@ let BLOXR_AUTH_HEADER = process.env.BLOXR_AUTH_HEADER || ""; // User should prov
 let currentWsIndex = 0;
 let currentRpcIndex = 0;
 
-// Initialization moved after constants to avoid "before initialization" errors
-let provider: ethers.JsonRpcProvider;
+// Initialize provider with static network to avoid "failed to detect network" errors
+const bscNetwork = ethers.Network.from(56);
+
+// Use a more robust initialization for JsonRpcProvider
+let provider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], bscNetwork, { 
+  staticNetwork: true,
+  batchMaxCount: 1 
+});
+
+// Initial connection check
+async function verifyInitialConnection() {
+  try {
+    // Timeout the network check to avoid hanging
+    const networkPromise = provider.getNetwork();
+    const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 5000));
+    
+    await Promise.race([networkPromise, timeoutPromise]);
+    console.log(`✅ Connected to BSC via ${RPC_NODES[currentRpcIndex]}`);
+  } catch (e: any) {
+    console.warn(`⚠️ Initial RPC ${RPC_NODES[currentRpcIndex]} failed (${e.message}), switching...`);
+    await switchRpc();
+  }
+}
+verifyInitialConnection();
+
 let switchRetries = 0;
 let isSwitching = false;
+
+async function initMulticall() {
+  try {
+    multicallProvider = MulticallWrapper.wrap(provider);
+    console.log("Multicall Provider initialized (ethers-multicall-provider)");
+  } catch (e: any) {
+    console.error("Multicall init failed:", e.message);
+  }
+}
+
+initMulticall();
 
 // Helper for effective price calculation
 async function effectivePriceAfterFees(amountIn: bigint, path: string[], router: any): Promise<bigint> {
@@ -219,6 +256,8 @@ function connectToWs(url: string, sourceName: string, headers: any = {}) {
   }
 }
 
+setupMempoolListeners();
+
 async function switchRpc() {
   if (isSwitching) return;
   isSwitching = true;
@@ -243,8 +282,9 @@ async function performSwitch() {
   console.log(`Switching to RPC: ${RPC_NODES[currentRpcIndex]} (Attempt ${switchRetries})`);
   
   try {
-    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], undefined, { 
-      staticNetwork: true
+    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], bscNetwork, { 
+      staticNetwork: true,
+      batchMaxCount: 1 
     });
     // Try to get network to verify it's working with timeout
     const networkPromise = newProvider.getNetwork();
@@ -560,6 +600,8 @@ async function setupMevShare(signer: any) {
 
 // Update prices every 5 seconds
 setInterval(updatePrices, 5000);
+updatePrices();
+
 app.get("/api/prices", (req, res) => {
   res.json(lastPrices);
 });
@@ -1133,38 +1175,6 @@ app.use("/api/*", (req, res) => {
 });
 
 async function startServer() {
-  // Initialize Provider
-  provider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], 56, { staticNetwork: true });
-  
-  try {
-    await provider.getNetwork();
-    console.log(`✅ Connected to BSC via ${RPC_NODES[currentRpcIndex]}`);
-  } catch (e: any) {
-    console.warn(`⚠️ Initial RPC ${RPC_NODES[currentRpcIndex]} failed, switching...`);
-    await performSwitch();
-  }
-
-  // Initialize Contracts after provider is ready
-  pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
-  biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
-  apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, provider);
-  bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
-  babyswapContract = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, provider);
-  mdexContract = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, provider);
-
-  // Initialize Multicall
-  try {
-    multicallProvider = MulticallWrapper.wrap(provider);
-    console.log("Multicall Provider initialized");
-  } catch (e) {
-    console.error("Multicall init failed");
-  }
-
-  // Start Listeners
-  setupMempoolListeners();
-  updatePrices();
-  setInterval(updatePrices, 5000);
-
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -1180,8 +1190,17 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  app.listen(PORT, "0.0.0.0", async () => {
     console.log(`BSC Arbitrage Engine running on http://localhost:${PORT}`);
+    
+    // Initial RPC check
+    try {
+      await provider.getNetwork();
+      console.log("Initial RPC connection successful");
+    } catch (err) {
+      console.error("Initial RPC connection failed, switching...");
+      await switchRpc();
+    }
   });
 }
 
