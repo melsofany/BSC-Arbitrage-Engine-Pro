@@ -26,6 +26,8 @@ let mevShareClient: MevShareClient | null = null;
 let privateRpcProvider: ethers.JsonRpcProvider | null = null;
 let multicallProvider: any = null;
 let wsProviders: WebSocket[] = [];
+// WebSocket provider dedicated for stable event subscriptions (avoids HTTP filter expiry)
+let eventWsProvider: ethers.WebSocketProvider | null = null;
 
 // BSC RPC URLs - Reliable nodes for cloud-hosted environments (no Binance dataseed which blocks cloud IPs)
 const RPC_NODES = [
@@ -271,9 +273,6 @@ function setupMempoolListeners() {
   // 3. New Pair Listener
   setupNewPairListener();
 }
-
-// WebSocket provider dedicated for stable event subscriptions (avoids HTTP filter expiry)
-let eventWsProvider: ethers.WebSocketProvider | null = null;
 
 function setupNewPairListener() {
   try {
