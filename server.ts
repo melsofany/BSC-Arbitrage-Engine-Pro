@@ -29,15 +29,15 @@ let wsProviders: WebSocket[] = [];
 
 // BSC RPC URLs - Using multiple fallbacks for reliability
 const RPC_NODES = [
-  "https://bsc-dataseed.binance.org/",
+  "https://binance.llamarpc.com",
+  "https://bsc-dataseed.binance.org",
   "https://bsc-rpc.publicnode.com",
-  "https://rpc.ankr.com/bsc",
-  "https://bsc-dataseed1.defibit.io/"
+  "https://rpc.ankr.com/bsc"
 ];
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://bsc-dataseed.binance.org",
+  "wss://binance.llamarpc.com",
   "wss://rpc.ankr.com/bsc/ws"
 ];
 
@@ -52,9 +52,8 @@ let currentRpcIndex = 0;
 const bscNetwork = ethers.Network.from(56);
 
 // Use a more robust initialization for JsonRpcProvider
-let provider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], bscNetwork, { 
-  staticNetwork: true,
-  batchMaxCount: 1 
+let provider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], undefined, { 
+  staticNetwork: true
 });
 
 // Initial connection check
@@ -282,9 +281,8 @@ async function performSwitch() {
   console.log(`Switching to RPC: ${RPC_NODES[currentRpcIndex]} (Attempt ${switchRetries})`);
   
   try {
-    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], bscNetwork, { 
-      staticNetwork: true,
-      batchMaxCount: 1 
+    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex], undefined, { 
+      staticNetwork: true
     });
     // Try to get network to verify it's working with timeout
     const networkPromise = newProvider.getNetwork();
