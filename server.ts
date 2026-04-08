@@ -481,7 +481,8 @@ app.post("/api/wallet-balance", async (req, res) => {
 
   try {
     const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
-    const wallet = new ethers.Wallet(privateKey, checkProvider);
+    const cleanPrivateKey = (privateKey.trim().startsWith("0x") ? privateKey.trim() : `0x${privateKey.trim()}`);
+    const wallet = new ethers.Wallet(cleanPrivateKey, checkProvider);
     const balance = await checkProvider.getBalance(wallet.address);
     res.json({ 
       balance: ethers.formatEther(balance),
@@ -508,7 +509,8 @@ app.post("/api/settings/advanced", async (req, res) => {
     }
     
     if (useMevShare && privateKey) {
-      const signer = new ethers.Wallet(privateKey, provider);
+      const cleanSignerKey = (privateKey.trim().startsWith("0x") ? privateKey.trim() : `0x${privateKey.trim()}`);
+      const signer = new ethers.Wallet(cleanSignerKey, provider);
       await setupMevShare(signer);
     }
     
@@ -542,7 +544,8 @@ app.post("/api/execute", async (req, res) => {
   console.log(`Executing trade: ${buyDex} -> ${sellDex} | Pair: ${pair} | Amount: ${amount} | FlashLoan: ${useFlashLoan} | Loan: ${loanAmount} ${loanProvider}`);
 
   try {
-    const wallet = new ethers.Wallet(privateKey, provider);
+    const cleanExecKey = (privateKey.trim().startsWith("0x") ? privateKey.trim() : `0x${privateKey.trim()}`);
+    const wallet = new ethers.Wallet(cleanExecKey, provider);
     
     // Verify contract address has code
     const code = await provider.getCode(contractAddress);
