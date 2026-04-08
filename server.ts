@@ -73,6 +73,42 @@ const scannerConfig: ScannerConfig = {
   gasEstimate: ethers.parseUnits("0.007", "ether") // 0.007 BNB
 };
 
+const ROUTER_ABI = [
+  "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)"
+];
+
+const v2RouterInterface = new ethers.Interface([
+  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory)"
+]);
+
+// Addresses
+const PANCAKE_ROUTER = ethers.getAddress("0x10ed43c718714eb63d5aa57b78b54704e256024e".toLowerCase());
+const BISWAP_ROUTER = ethers.getAddress("0x3a6d8ca21d1cf76f653a67577fa0d27453350dce".toLowerCase());
+const APESWAP_ROUTER = ethers.getAddress("0xcf0febd3f17cef5b47b0cd257acf6025c5bff3b7".toLowerCase());
+const BAKERY_ROUTER = ethers.getAddress("0xcde540d7eafe93ac5fe6233bee57e1270d3e330f".toLowerCase());
+const BABYSWAP_ROUTER = ethers.getAddress("0x325e343f1de2356f596938ac336224c33554444b".toLowerCase());
+const MDEX_ROUTER = ethers.getAddress("0x7dae51bd3df1541f4846fb9452375937d8357336".toLowerCase());
+
+const PANCAKE_FACTORY = ethers.getAddress("0xca143ce32fe78f1f7019d7d551a6402fc5350c73".toLowerCase());
+const BISWAP_FACTORY = ethers.getAddress("0x858e3312ed3a8762e0101bb5c46a8c1ed44dc160".toLowerCase());
+const APESWAP_FACTORY = ethers.getAddress("0x0841bd0b734e4f5853f0dd8d7ea041c241fb0da6".toLowerCase());
+const BAKERY_FACTORY = ethers.getAddress("0x01bf708e59d7723694d64c332696db0000000000".toLowerCase());
+const BABYSWAP_FACTORY = ethers.getAddress("0x85e0e343f1de2356f596938ac336224c3554444b".toLowerCase());
+const MDEX_FACTORY = ethers.getAddress("0x3cd1c46068da20007d54dc21199710521547612c".toLowerCase());
+
+const WBNB = ethers.getAddress("0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c".toLowerCase());
+const BUSD = ethers.getAddress("0xe9e7cea3dedca5984780bafc599bd69add087d56".toLowerCase());
+const USDT = ethers.getAddress("0x55d398326f99059ff775485246999027b3197955".toLowerCase());
+const ETH = ethers.getAddress("0x2170ed0880ac9a755fd29b2688956bd959f933f8".toLowerCase());
+const CAKE = ethers.getAddress("0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82".toLowerCase());
+const BTCB = ethers.getAddress("0x7130d2a12b9bcbae4f2634d864a1ee1ce3ead9c3".toLowerCase());
+console.log("BTCB ADDRESS:", BTCB);
+const ADA = ethers.getAddress("0x3ee2200efb3400fabb9aacf31297cbdd1d435d47".toLowerCase());
+const DOT = ethers.getAddress("0x7083609fce4d1d8dc0c979aab8c869ea8c1f7329".toLowerCase());
+const XRP = ethers.getAddress("0x1d2f0da169ceb2df7b744837037f081f79794b16".toLowerCase());
+const LINK = ethers.getAddress("0xf8a06f1317e506864b618301216b45c397b9010d".toLowerCase());
+const FIL = ethers.getAddress("0x0d21c53b6e53997751ff24b0375936788096d40f".toLowerCase());
+const LTC = ethers.getAddress("0x4338665c00d9755421b2518275675b399046093c".toLowerCase());
 async function initMulticall() {
   try {
     multicallProvider = MulticallWrapper.wrap(provider);
@@ -245,45 +281,6 @@ async function performSwitch() {
     await performSwitch();
   }
 }
-
-// DEX Router ABIs (Simplified for getAmountsOut)
-const ROUTER_ABI = [
-  "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)"
-];
-
-const v2RouterInterface = new ethers.Interface([
-  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory)"
-]);
-
-// Addresses
-const PANCAKE_ROUTER = ethers.getAddress("0x10ed43c718714eb63d5aa57b78b54704e256024e".toLowerCase());
-const BISWAP_ROUTER = ethers.getAddress("0x3a6d8ca21d1cf76f653a67577fa0d27453350dce".toLowerCase());
-const APESWAP_ROUTER = ethers.getAddress("0xcf0febd3f17cef5b47b0cd257acf6025c5bff3b7".toLowerCase());
-const BAKERY_ROUTER = ethers.getAddress("0xcde540d7eafe93ac5fe6233bee57e1270d3e330f".toLowerCase());
-const BABYSWAP_ROUTER = ethers.getAddress("0x325e343f1de2356f596938ac336224c33554444b".toLowerCase());
-const MDEX_ROUTER = ethers.getAddress("0x7dae51bd3df1541f4846fb9452375937d8357336".toLowerCase());
-
-const PANCAKE_FACTORY = ethers.getAddress("0xca143ce32fe78f1f7019d7d551a6402fc5350c73".toLowerCase());
-const BISWAP_FACTORY = ethers.getAddress("0x858e3312ed3a8762e0101bb5c46a8c1ed44dc160".toLowerCase());
-const APESWAP_FACTORY = ethers.getAddress("0x0841bd0b734e4f5853f0dd8d7ea041c241fb0da6".toLowerCase());
-const BAKERY_FACTORY = ethers.getAddress("0x01bf708e59d7723694d64c332696db0000000000".toLowerCase());
-const BABYSWAP_FACTORY = ethers.getAddress("0x85e0e343f1de2356f596938ac336224c3554444b".toLowerCase());
-const MDEX_FACTORY = ethers.getAddress("0x3cd1c46068da20007d54dc21199710521547612c".toLowerCase());
-
-const WBNB = ethers.getAddress("0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c".toLowerCase());
-const BUSD = ethers.getAddress("0xe9e7cea3dedca5984780bafc599bd69add087d56".toLowerCase());
-const USDT = ethers.getAddress("0x55d398326f99059ff775485246999027b3197955".toLowerCase());
-const ETH = ethers.getAddress("0x2170ed0880ac9a755fd29b2688956bd959f933f8".toLowerCase());
-const CAKE = ethers.getAddress("0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82".toLowerCase());
-const BTCB = ethers.getAddress("0x7130d2a12b9bcbae4f2634d864a1ee1ce3ead9c3".toLowerCase());
-console.log("BTCB ADDRESS:", BTCB);
-const ADA = ethers.getAddress("0x3ee2200efb3400fabb9aacf31297cbdd1d435d47".toLowerCase());
-const DOT = ethers.getAddress("0x7083609fce4d1d8dc0c979aab8c869ea8c1f7329".toLowerCase());
-const XRP = ethers.getAddress("0x1d2f0da169ceb2df7b744837037f081f79794b16".toLowerCase());
-const LINK = ethers.getAddress("0xf8a06f1317e506864b618301216b45c397b9010d".toLowerCase());
-const FIL = ethers.getAddress("0x0d21c53b6e53997751ff24b0375936788096d40f".toLowerCase());
-const LTC = ethers.getAddress("0x4338665c00d9755421b2518275675b399046093c".toLowerCase());
-
 let lastPrices = {
   pancake: "0",
   biswap: "0",
