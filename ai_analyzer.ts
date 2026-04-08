@@ -1,17 +1,20 @@
 import { OpenAI } from "openai";
 
-// Initialize OpenAI client only if API key is provided
-const apiKey = process.env.OPENAI_API_KEY;
+// Initialize OpenAI client for DeepSeek
+// Note: DeepSeek uses an OpenAI-compatible API
+const apiKey = process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY;
+const baseURL = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
+
 let client: OpenAI | null = null;
 
 if (apiKey) {
   client = new OpenAI({
     apiKey: apiKey,
-    baseURL: process.env.OPENAI_BASE_URL || "https://api.openai.com/v1"
+    baseURL: baseURL
   });
-  console.log("🤖 AI Analyzer initialized with OpenAI/DeepSeek");
+  console.log(`🤖 AI Analyzer: DeepSeek Engine Activated (BaseURL: ${baseURL})`);
 } else {
-  console.warn("⚠️ AI Analyzer: OPENAI_API_KEY is missing. AI features will be disabled, but the server will continue to run.");
+  console.warn("⚠️ AI Analyzer: DEEPSEEK_API_KEY is missing. AI features disabled.");
 }
 
 export interface MarketState {
@@ -21,41 +24,56 @@ export interface MarketState {
 }
 
 export async function analyzeOpportunitiesWithAI(state: MarketState) {
-  if (!client) {
-    // Return empty if AI is not configured
-    return [];
-  }
+  if (!client) return [];
 
   try {
     const prompt = `
-    Analyze the following BSC market state for arbitrage opportunities.
-    Market Data: ${JSON.stringify(state.pairs)}
-    Mempool Activity: ${state.mempoolActivity.join(", ")}
-    CEX Prices: ${JSON.stringify(state.cexPrices)}
+    You are a high-frequency MEV and Arbitrage expert on Binance Smart Chain (BSC).
+    Analyze the current market state and identify profitable arbitrage opportunities.
 
-    Task:
-    1. Identify pairs with price discrepancies > 0.1%.
-    2. Predict if a pending transaction in mempool will create a larger spread.
-    3. Suggest the best path (Direct or Triangular).
-    4. Estimate if the profit will cover gas fees (approx 0.005 BNB).
+    MARKET DATA (DEX Prices):
+    ${JSON.stringify(state.pairs, null, 2)}
 
-    Return a JSON array of objects with: {pair, buyDex, sellDex, expectedProfitPct, reason, type: 'direct'|'triangular'}.
-    Only return the JSON array, no other text.
+    CEX REFERENCE PRICES:
+    ${JSON.stringify(state.cexPrices, null, 2)}
+
+    MEMPOOL ACTIVITY:
+    ${state.mempoolActivity.length > 0 ? state.mempoolActivity.join(", ") : "No significant pending swaps detected."}
+
+    GOAL:
+    1. Find price discrepancies between DEXs (Pancake, Biswap, ApeSwap, etc.) > 0.05%.
+    2. Identify potential Triangular Arbitrage paths (e.g., BNB -> BUSD -> USDT -> BNB).
+    3. Cross-reference with CEX prices to ensure the DEX price isn't just lagging or manipulated.
+    4. Account for BSC gas fees (approx 0.003 - 0.005 BNB).
+
+    OUTPUT FORMAT:
+    Return ONLY a JSON object with an "opportunities" array. Each object must have:
+    {
+      "pair": "Token/BNB",
+      "buyDex": "DEX Name",
+      "sellDex": "DEX Name",
+      "expectedProfitPct": number,
+      "reason": "Short explanation of why this is profitable",
+      "type": "direct" | "triangular"
+    }
     `;
 
     const response = await client.chat.completions.create({
-      model: "gpt-4.1-mini",
+      model: "deepseek-chat", // Default DeepSeek model
       messages: [
-        { role: "system", content: "You are an expert MEV and Arbitrage analyst on BSC." },
+        { role: "system", content: "You are a professional BSC Arbitrage Bot Assistant. Output only valid JSON." },
         { role: "user", content: prompt }
       ],
       response_format: { type: "json_object" }
     });
 
     const content = response.choices[0].message.content;
-    return content ? JSON.parse(content).opportunities : [];
-  } catch (error) {
-    console.error("AI Analysis failed:", error);
+    if (!content) return [];
+    
+    const parsed = JSON.parse(content);
+    return parsed.opportunities || [];
+  } catch (error: any) {
+    console.error("DeepSeek Analysis failed:", error.message);
     return [];
   }
 }
