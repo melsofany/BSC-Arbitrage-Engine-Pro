@@ -31,9 +31,10 @@ let wsProviders: WebSocket[] = [];
 // BSC RPC URLs - Using multiple fallbacks for reliability
 const RPC_NODES = [
   "https://bsc-dataseed.binance.org/",
-  "https://bsc-dataseed1.defibit.io/",
-  "https://bsc-dataseed1.ninicoin.io/",
-  "https://bsc-rpc.publicnode.com"
+  "https://bsc-rpc.publicnode.com",
+  "https://binance.llamarpc.com",
+  "https://bsc.meowrpc.com",
+  "https://bsc-dataseed1.defibit.io/"
 ];
 
 const WS_NODES = [
@@ -185,19 +186,19 @@ async function switchRpc() {
 async function performSwitch() {
   if (switchRetries >= RPC_NODES.length) {
     console.error("All RPC nodes are failing. Waiting before retry...");
-    await new Promise(r => setTimeout(r, 10000));
+    await new Promise(r => setTimeout(r, 15000));
     switchRetries = 0;
     return;
   }
   
   currentRpcIndex = (currentRpcIndex + 1) % RPC_NODES.length;
   switchRetries++;
-  console.log(`Switching to RPC: ${RPC_NODES[currentRpcIndex]} (Attempt ${switchRetries})`);
+  const rpcUrl = RPC_NODES[currentRpcIndex];
+  console.log(`Switching to RPC: ${rpcUrl} (Attempt ${switchRetries})`);
   
   try {
-    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex]);
-    // Try to get network to verify it's working
-    await newProvider.getNetwork();
+    // Use staticNetwork to avoid getNetwork calls on every request
+    const newProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true });
     
     provider = newProvider;
     // Re-initialize contracts with new provider
@@ -205,10 +206,16 @@ async function performSwitch() {
     biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
     apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, provider);
     bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
-    console.log("Successfully switched to new RPC");
-    switchRetries = 0; // Reset on success
+    
+    // Re-init multicall if possible
+    try {
+      multicallProvider = MulticallWrapper.wrap(provider);
+    } catch (e) {}
+
+    console.log(`Successfully switched to RPC: ${rpcUrl}`);
+    switchRetries = 0; 
   } catch (err) {
-    console.error(`Failed to connect to RPC ${RPC_NODES[currentRpcIndex]}, trying next...`);
+    console.error(`Failed to connect to RPC ${rpcUrl}, trying next...`);
     await performSwitch();
   }
 }
@@ -268,6 +275,7 @@ let lastPrices = {
   babyswap: "0",
   mdex: "0",
   pairs: {} as Record<string, any>,
+  aiOpportunities: [] as any[],
   timestamp: Date.now()
 };
 
@@ -359,6 +367,7 @@ async function updatePrices() {
     }).then(aiOpps => {
       if (aiOpps && aiOpps.length > 0) {
         console.log("🤖 AI Detected Opportunities:", aiOpps);
+        lastPrices.aiOpportunities = aiOpps;
       }
     }).catch(err => {
       console.error("AI Analysis skipped or failed:", err.message);
