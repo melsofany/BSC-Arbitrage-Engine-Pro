@@ -37,8 +37,8 @@ const RPC_NODES = [
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://rpc.ankr.com/bsc/ws",
-  "wss://bsc-ws-node.nariox.org"
+  "wss://bsc-ws-node.nariox.org",
+  "wss://binance.ankr.com"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
