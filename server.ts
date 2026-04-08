@@ -42,8 +42,7 @@ const RPC_NODES = [
 ];
 
 const WS_NODES = [
-  "wss://bsc-rpc.publicnode.com",
-  "wss://rpc.ankr.com/bsc/ws"
+  "wss://bsc-rpc.publicnode.com"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -184,6 +183,72 @@ async function checkSpecificPair(tokenIn: string, tokenOut: string) {
 }
 
 // Multi-Source Mempool Listener
+
+// DEX Router ABIs (Simplified for getAmountsOut)
+const ROUTER_ABI = [
+  "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)"
+];
+
+const v2RouterInterface = new ethers.Interface([
+  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory)"
+]);
+
+const FACTORY_ABI = [
+  "event PairCreated(address indexed token0, address indexed token1, address pair, uint)"
+];
+
+// Addresses
+const PANCAKE_ROUTER = ethers.getAddress("0x10ed43c718714eb63d5aa57b78b54704e256024e".toLowerCase());
+const BISWAP_ROUTER = ethers.getAddress("0x3a6d8ca21d1cf76f653a67577fa0d27453350dce".toLowerCase());
+const APESWAP_ROUTER = ethers.getAddress("0xcf0febd3f17cef5b47b0cd257acf6025c5bff3b7".toLowerCase());
+const BAKERY_ROUTER = ethers.getAddress("0xcde540d7eafe93ac5fe6233bee57e1270d3e330f".toLowerCase());
+const BABYSWAP_ROUTER = ethers.getAddress("0x325e343f1de2356f596938ac336224c33554444b".toLowerCase());
+const MDEX_ROUTER = ethers.getAddress("0x7dae51bd3df1541f4846fb9452375937d8357336".toLowerCase());
+
+const PANCAKE_FACTORY = ethers.getAddress("0xca143ce32fe78f1f7019d7d551a6402fc5350c73".toLowerCase());
+const BISWAP_FACTORY = ethers.getAddress("0x858e3312ed3a8762e0101bb5c46a8c1ed44dc160".toLowerCase());
+const APESWAP_FACTORY = ethers.getAddress("0x0841bd0b734e4f5853f0dd8d7ea041c241fb0da6".toLowerCase());
+const BAKERY_FACTORY = ethers.getAddress("0x01bf708e59d7723694d64c332696db0000000000".toLowerCase());
+const BABYSWAP_FACTORY = ethers.getAddress("0x85e0e343f1de2356f596938ac336224c3554444b".toLowerCase());
+const MDEX_FACTORY = ethers.getAddress("0x3cd1c46068da20007d54dc21199710521547612c".toLowerCase());
+
+const WBNB = ethers.getAddress("0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c".toLowerCase());
+const BUSD = ethers.getAddress("0xe9e7cea3dedca5984780bafc599bd69add087d56".toLowerCase());
+const USDT = ethers.getAddress("0x55d398326f99059ff775485246999027b3197955".toLowerCase());
+const ETH = ethers.getAddress("0x2170ed0880ac9a755fd29b2688956bd959f933f8".toLowerCase());
+const CAKE = ethers.getAddress("0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82".toLowerCase());
+const BTCB = ethers.getAddress("0x7130d2a12b9bcbae4f2634d864a1ee1ce3ead9c3".toLowerCase());
+console.log("BTCB ADDRESS:", BTCB);
+const ADA = ethers.getAddress("0x3ee2200efb3400fabb9aacf31297cbdd1d435d47".toLowerCase());
+const DOT = ethers.getAddress("0x7083609fce4d1d8dc0c979aab8c869ea8c1f7329".toLowerCase());
+const XRP = ethers.getAddress("0x1d2f0da169ceb2df7b744837037f081f79794b16".toLowerCase());
+const LINK = ethers.getAddress("0xf8a06f1317e506864b618301216b45c397b9010d".toLowerCase());
+const FIL = ethers.getAddress("0x0d21c53b6e53997751ff24b0375936788096d40f".toLowerCase());
+const LTC = ethers.getAddress("0x4338665c00d9755421b2518275675b399046093c".toLowerCase());
+
+// Long-Tail & High Volatility Tokens
+const SHIB = ethers.getAddress("0x2859e4544C4bB03966803b044A93563Bd2D0DD4D".toLowerCase());
+const DOGE = ethers.getAddress("0xba2ae424d960c26247dd6c32edc70b295c744c43".toLowerCase());
+const MATIC = ethers.getAddress("0xcc42724c6683b7e57334c4e856f4c9965ed682bd".toLowerCase());
+const AVAX = ethers.getAddress("0x1ce0c2827e2ef14d5c4f29a091d735a204794041".toLowerCase());
+const SOL = ethers.getAddress("0x570a5d26f7765ecb712c0924e4de545b89fd43df".toLowerCase());
+const FTM = ethers.getAddress("0xad29abb318791d579433d831ed122afeaf297ff5".toLowerCase());
+const ATOM = ethers.getAddress("0x0eb3a705fc54725037cc9e008bdede697f62f335".toLowerCase());
+const NEAR = ethers.getAddress("0x1fa4a73a3f01f7741a8ef940a023e3acc6f9e720".toLowerCase());
+const ALGO = ethers.getAddress("0xe79a6d4b9632b8d28641f42205049ce9997a3298".toLowerCase());
+const VET = ethers.getAddress("0x6fd7604651d073c84df356d227f758e2a2366bd2".toLowerCase());
+const SAND = ethers.getAddress("0x3764be110aa3415617d362f306a96146c4e3955d".toLowerCase());
+const MANA = ethers.getAddress("0x484797e666e0d31f489565b395775464ec33421c".toLowerCase());
+
+let pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
+let biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
+let apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, provider);
+let bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
+let babyswapContract = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, provider);
+let mdexContract = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, provider);
+
+setupMempoolListeners();
+
 function setupMempoolListeners() {
   // Clear existing
   wsProviders.forEach(ws => {
@@ -261,8 +326,6 @@ function connectToWs(url: string, sourceName: string, headers: any = {}) {
   }
 }
 
-setupMempoolListeners();
-
 async function switchRpc() {
   if (isSwitching) return;
   isSwitching = true;
@@ -310,69 +373,6 @@ async function performSwitch() {
     await performSwitch();
   }
 }
-
-// DEX Router ABIs (Simplified for getAmountsOut)
-const ROUTER_ABI = [
-  "function getAmountsOut(uint amountIn, address[] memory path) public view returns (uint[] memory amounts)"
-];
-
-const v2RouterInterface = new ethers.Interface([
-  "function swapExactTokensForTokens(uint amountIn, uint amountOutMin, address[] calldata path, address to, uint deadline) external returns (uint[] memory)"
-]);
-
-const FACTORY_ABI = [
-  "event PairCreated(address indexed token0, address indexed token1, address pair, uint)"
-];
-
-// Addresses
-const PANCAKE_ROUTER = ethers.getAddress("0x10ed43c718714eb63d5aa57b78b54704e256024e".toLowerCase());
-const BISWAP_ROUTER = ethers.getAddress("0x3a6d8ca21d1cf76f653a67577fa0d27453350dce".toLowerCase());
-const APESWAP_ROUTER = ethers.getAddress("0xcf0febd3f17cef5b47b0cd257acf6025c5bff3b7".toLowerCase());
-const BAKERY_ROUTER = ethers.getAddress("0xcde540d7eafe93ac5fe6233bee57e1270d3e330f".toLowerCase());
-const BABYSWAP_ROUTER = ethers.getAddress("0x325e343f1de2356f596938ac336224c33554444b".toLowerCase());
-const MDEX_ROUTER = ethers.getAddress("0x7dae51bd3df1541f4846fb9452375937d8357336".toLowerCase());
-
-const PANCAKE_FACTORY = ethers.getAddress("0xca143ce32fe78f1f7019d7d551a6402fc5350c73".toLowerCase());
-const BISWAP_FACTORY = ethers.getAddress("0x858e3312ed3a8762e0101bb5c46a8c1ed44dc160".toLowerCase());
-const APESWAP_FACTORY = ethers.getAddress("0x0841bd0b734e4f5853f0dd8d7ea041c241fb0da6".toLowerCase());
-const BAKERY_FACTORY = ethers.getAddress("0x01bf708e59d7723694d64c332696db0000000000".toLowerCase());
-const BABYSWAP_FACTORY = ethers.getAddress("0x85e0e343f1de2356f596938ac336224c3554444b".toLowerCase());
-const MDEX_FACTORY = ethers.getAddress("0x3cd1c46068da20007d54dc21199710521547612c".toLowerCase());
-
-const WBNB = ethers.getAddress("0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c".toLowerCase());
-const BUSD = ethers.getAddress("0xe9e7cea3dedca5984780bafc599bd69add087d56".toLowerCase());
-const USDT = ethers.getAddress("0x55d398326f99059ff775485246999027b3197955".toLowerCase());
-const ETH = ethers.getAddress("0x2170ed0880ac9a755fd29b2688956bd959f933f8".toLowerCase());
-const CAKE = ethers.getAddress("0x0e09fabb73bd3ade0a17ecc321fd13a19e81ce82".toLowerCase());
-const BTCB = ethers.getAddress("0x7130d2a12b9bcbae4f2634d864a1ee1ce3ead9c3".toLowerCase());
-console.log("BTCB ADDRESS:", BTCB);
-const ADA = ethers.getAddress("0x3ee2200efb3400fabb9aacf31297cbdd1d435d47".toLowerCase());
-const DOT = ethers.getAddress("0x7083609fce4d1d8dc0c979aab8c869ea8c1f7329".toLowerCase());
-const XRP = ethers.getAddress("0x1d2f0da169ceb2df7b744837037f081f79794b16".toLowerCase());
-const LINK = ethers.getAddress("0xf8a06f1317e506864b618301216b45c397b9010d".toLowerCase());
-const FIL = ethers.getAddress("0x0d21c53b6e53997751ff24b0375936788096d40f".toLowerCase());
-const LTC = ethers.getAddress("0x4338665c00d9755421b2518275675b399046093c".toLowerCase());
-
-// Long-Tail & High Volatility Tokens
-const SHIB = ethers.getAddress("0x2859e4544C4bB03966803b044A93563Bd2D0DD4D".toLowerCase());
-const DOGE = ethers.getAddress("0xba2ae424d960c26247dd6c32edc70b295c744c43".toLowerCase());
-const MATIC = ethers.getAddress("0xcc42724c6683b7e57334c4e856f4c9965ed682bd".toLowerCase());
-const AVAX = ethers.getAddress("0x1ce0c2827e2ef14d5c4f29a091d735a204794041".toLowerCase());
-const SOL = ethers.getAddress("0x570a5d26f7765ecb712c0924e4de545b89fd43df".toLowerCase());
-const FTM = ethers.getAddress("0xad29abb318791d579433d831ed122afeaf297ff5".toLowerCase());
-const ATOM = ethers.getAddress("0x0eb3a705fc54725037cc9e008bdede697f62f335".toLowerCase());
-const NEAR = ethers.getAddress("0x1fa4a73a3f01f7741a8ef940a023e3acc6f9e720".toLowerCase());
-const ALGO = ethers.getAddress("0xe79a6d4b9632b8d28641f42205049ce9997a3298".toLowerCase());
-const VET = ethers.getAddress("0x6fd7604651d073c84df356d227f758e2a2366bd2".toLowerCase());
-const SAND = ethers.getAddress("0x3764be110aa3415617d362f306a96146c4e3955d".toLowerCase());
-const MANA = ethers.getAddress("0x484797e666e0d31f489565b395775464ec33421c".toLowerCase());
-
-let pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
-let biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
-let apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, provider);
-let bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
-let babyswapContract = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, provider);
-let mdexContract = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, provider);
 
 let lastPrices = {
   pancake: "0",
