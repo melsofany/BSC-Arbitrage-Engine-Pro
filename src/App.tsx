@@ -37,7 +37,6 @@ interface PriceData {
   pancake: string;
   biswap: string;
   pairs?: Record<string, Record<string, string>>;
-  aiOpportunities?: any[];
   timestamp: number;
 }
 
@@ -263,14 +262,14 @@ export default function App() {
   const [privateKey, setPrivateKey] = useState(() => localStorage.getItem("arb_pk") || "");
   const [contractAddress, setContractAddress] = useState(() => localStorage.getItem("arb_ca") || "");
   const [rpcEndpoint, setRpcEndpoint] = useState(() => localStorage.getItem("arb_rpc") || "https://bsc-dataseed.binance.org/");
-  const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.1");
+  const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.35");
   const [maxGas, setMaxGas] = useState(() => localStorage.getItem("arb_max_gas") || "5");
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [isContractVerified, setIsContractVerified] = useState(false);
   const [walletBalance, setWalletBalance] = useState<string | null>(null);
 
   const filteredOpportunities = useMemo(() => {
-    const threshold = parseFloat(minProfit) || 0.1;
+    const threshold = parseFloat(minProfit) || 0.5;
     return opportunities.filter(opp => (opp.profit / opp.buyPrice * 100) >= threshold);
   }, [opportunities, minProfit]);
 
@@ -469,32 +468,9 @@ export default function App() {
           }
         }
 
-        // Add AI opportunities if available
-        if (data.aiOpportunities && data.aiOpportunities.length > 0) {
-          data.aiOpportunities.forEach((aiOpp: any) => {
-            newOpps.push({
-              id: `ai-${aiOpp.pair}-${Date.now()}-${Math.random()}`,
-              pair: aiOpp.pair,
-              buyDex: aiOpp.buyDex,
-              sellDex: aiOpp.sellDex,
-              buyPrice: aiOpp.buyPrice || 0,
-              sellPrice: aiOpp.sellPrice || 0,
-              profit: aiOpp.profit || 0,
-              timestamp: data.timestamp,
-              isMempool: true,
-              isFlashLoan: useFlashLoan
-            });
-          });
-        }
-
         if (newOpps.length > 0) {
-          addAlert(t.arbitrageOpp.replace("{percent}", (newOpps[0].profit / (newOpps[0].buyPrice || 1) * 100).toFixed(2)), 'success');
-          setOpportunities(prev => {
-            // Filter out duplicates by pair and dex
-            const combined = [...newOpps, ...prev];
-            const unique = combined.filter((v, i, a) => a.findIndex(t => (t.pair === v.pair && t.buyDex === v.buyDex && t.sellDex === v.sellDex)) === i);
-            return unique.slice(0, 20);
-          });
+          addAlert(t.arbitrageOpp.replace("{percent}", (newOpps[0].profit / newOpps[0].buyPrice * 100).toFixed(2)), 'success');
+          setOpportunities(prev => [...newOpps, ...prev].slice(0, 20));
         }
       } catch (err) {
         console.error("Fetch error:", err);

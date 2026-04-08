@@ -3,7 +3,6 @@ import path from "path";
 import { ethers } from "ethers";
 import MevShareClient from "@flashbots/mev-share-client";
 import ethersMulticallProvider from "ethers-multicall-provider";
-import { analyzeOpportunitiesWithAI } from "./ai_analyzer";
 const { MulticallWrapper } = ethersMulticallProvider;
 import WebSocket from "ws";
 
@@ -31,10 +30,9 @@ let wsProviders: WebSocket[] = [];
 // BSC RPC URLs - Using multiple fallbacks for reliability
 const RPC_NODES = [
   "https://bsc-dataseed.binance.org/",
-  "https://bsc-rpc.publicnode.com",
-  "https://binance.llamarpc.com",
-  "https://bsc.meowrpc.com",
-  "https://bsc-dataseed1.defibit.io/"
+  "https://bsc-dataseed1.defibit.io/",
+  "https://bsc-dataseed1.ninicoin.io/",
+  "https://bsc-rpc.publicnode.com"
 ];
 
 const WS_NODES = [
@@ -186,19 +184,19 @@ async function switchRpc() {
 async function performSwitch() {
   if (switchRetries >= RPC_NODES.length) {
     console.error("All RPC nodes are failing. Waiting before retry...");
-    await new Promise(r => setTimeout(r, 15000));
+    await new Promise(r => setTimeout(r, 10000));
     switchRetries = 0;
     return;
   }
   
   currentRpcIndex = (currentRpcIndex + 1) % RPC_NODES.length;
   switchRetries++;
-  const rpcUrl = RPC_NODES[currentRpcIndex];
-  console.log(`Switching to RPC: ${rpcUrl} (Attempt ${switchRetries})`);
+  console.log(`Switching to RPC: ${RPC_NODES[currentRpcIndex]} (Attempt ${switchRetries})`);
   
   try {
-    // Use staticNetwork to avoid getNetwork calls on every request
-    const newProvider = new ethers.JsonRpcProvider(rpcUrl, undefined, { staticNetwork: true });
+    const newProvider = new ethers.JsonRpcProvider(RPC_NODES[currentRpcIndex]);
+    // Try to get network to verify it's working
+    await newProvider.getNetwork();
     
     provider = newProvider;
     // Re-initialize contracts with new provider
@@ -206,16 +204,10 @@ async function performSwitch() {
     biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
     apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, provider);
     bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, provider);
-    
-    // Re-init multicall if possible
-    try {
-      multicallProvider = MulticallWrapper.wrap(provider);
-    } catch (e) {}
-
-    console.log(`Successfully switched to RPC: ${rpcUrl}`);
-    switchRetries = 0; 
+    console.log("Successfully switched to new RPC");
+    switchRetries = 0; // Reset on success
   } catch (err) {
-    console.error(`Failed to connect to RPC ${rpcUrl}, trying next...`);
+    console.error(`Failed to connect to RPC ${RPC_NODES[currentRpcIndex]}, trying next...`);
     await performSwitch();
   }
 }
@@ -236,8 +228,6 @@ const APESWAP_ROUTER = ethers.getAddress("0xcf0febd3f17cef5b47b0cd257acf6025c5bf
 const BAKERY_ROUTER = ethers.getAddress("0xcde540d7eafe93ac5fe6233bee57e1270d3e330f".toLowerCase());
 const BABYSWAP_ROUTER = ethers.getAddress("0x325e343f1de2356f596938ac336224c33554444b".toLowerCase());
 const MDEX_ROUTER = ethers.getAddress("0x7dae51bd3df1541f4846fb9452375937d8357336".toLowerCase());
-const NOMISWAP_ROUTER = ethers.getAddress("0x858e3312ed3a8762e0101bb5c46a8c1ed44dc160".toLowerCase());
-const THE_ROUTER = ethers.getAddress("0x2aa0e3698848fd2d1502404bc486393980393292".toLowerCase());
 
 const PANCAKE_FACTORY = ethers.getAddress("0xca143ce32fe78f1f7019d7d551a6402fc5350c73".toLowerCase());
 const BISWAP_FACTORY = ethers.getAddress("0x858e3312ed3a8762e0101bb5c46a8c1ed44dc160".toLowerCase());
@@ -275,7 +265,6 @@ let lastPrices = {
   babyswap: "0",
   mdex: "0",
   pairs: {} as Record<string, any>,
-  aiOpportunities: [] as any[],
   timestamp: Date.now()
 };
 
@@ -317,9 +306,9 @@ async function checkTriangularArbitrage() {
         const profit = amountOut - amountIn;
         const profitBps = (profit * 10000n) / amountIn;
 
-        if (profitBps > 5n) { // Lowered to 0.05% for high-volume triangular arbitrage
+        if (profitBps > 15n) { // 0.15% profit threshold for triangle (after fees)
           console.log(`💎 Triangular Opportunity on ${name}: ${profitBps} bps | Path: ${path.join(" -> ")}`);
-          // AI could further validate this
+          // In a real scenario, we would trigger execution here if automated
         }
       } catch (e) {}
     }
@@ -358,22 +347,6 @@ async function updatePrices() {
   checkTriangularArbitrage();
   checkLiquidityImbalance();
   
-  // AI Analysis (Every 30 seconds to save API credits)
-  if (Date.now() % 30000 < 5000) {
-    analyzeOpportunitiesWithAI({
-      pairs: lastPrices.pairs,
-      mempoolActivity: [], // Could be populated from analyzePendingTx
-      cexPrices: cexPrices
-    }).then(aiOpps => {
-      if (aiOpps && aiOpps.length > 0) {
-        console.log("🤖 AI Detected Opportunities:", aiOpps);
-        lastPrices.aiOpportunities = aiOpps;
-      }
-    }).catch(err => {
-      console.error("AI Analysis skipped or failed:", err.message);
-    });
-  }
-  
   const amountIn = ethers.parseEther("1"); // 1 BNB
   const tokenPairs: Record<string, [string, string]> = {
     "WBNB/BUSD": [WBNB, BUSD],
@@ -390,10 +363,7 @@ async function updatePrices() {
     "SHIB/BNB": ["0x2859e4544C4bB03966803b044A93563Bd2D0DD4D", WBNB],
     "DOGE/BNB": ["0xba2ae424d960c26247dd6c32edc70b295c744c43", WBNB],
     "MATIC/BNB": ["0xcc42724c6683b7e57334c4e856f4c9965ed682bd", WBNB],
-    "AVAX/BNB": ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB],
-    "SOL/BNB": ["0x570a5d26f7765ecb712c0924e4de545b89fd43df", WBNB],
-    "TRX/BNB": ["0x85e0e343f1de2356f596938ac336224c33554444b", WBNB],
-    "UNI/BNB": ["0xbf5140a22578168fd562dccf235e5d43a02ce9b1", WBNB]
+    "AVAX/BNB": ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB]
   };
 
   const routers = {
@@ -402,9 +372,7 @@ async function updatePrices() {
     apeswap: APESWAP_ROUTER,
     bakeryswap: BAKERY_ROUTER,
     babyswap: BABYSWAP_ROUTER,
-    mdex: MDEX_ROUTER,
-    nomiswap: NOMISWAP_ROUTER,
-    thena: THE_ROUTER
+    mdex: MDEX_ROUTER
   };
 
   let success = false;
