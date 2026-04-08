@@ -239,6 +239,49 @@ class RpcManager {
     return this.currentHttpUrl;
   }
 
+  async switchToCustomRpc(customRpcUrl: string): Promise<boolean> {
+    console.log(`[RpcManager] Switching to custom RPC: ${customRpcUrl}`);
+    
+    try {
+      const newProvider = new ethers.JsonRpcProvider(customRpcUrl, this.bscNetwork, {
+        staticNetwork: true,
+        batchMaxCount: 1
+      });
+
+      const networkPromise = newProvider.getNetwork();
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error("Timeout")), this.timeout)
+      );
+
+      await Promise.race([networkPromise, timeoutPromise]);
+
+      // Cleanup old provider
+      if (this.httpProvider) {
+        try {
+          await this.httpProvider.destroy?.();
+        } catch (e) {}
+      }
+
+      this.httpProvider = newProvider;
+      this.currentHttpUrl = customRpcUrl;
+      this.lastSwitchTime = Date.now();
+      this.stats.failureCount = 0;
+      this.stats.successCount++;
+      this.stats.isHealthy = true;
+      this.stats.lastHealthCheck = Date.now();
+
+      console.log(`[RpcManager] ✅ Successfully switched to custom RPC: ${customRpcUrl}`);
+
+      await this.initializeMulticall();
+      return true;
+    } catch (error: any) {
+      console.error(`[RpcManager] ❌ Failed to switch to custom RPC: ${error.message}`);
+      this.stats.lastError = error.message;
+      this.stats.lastErrorTime = Date.now();
+      return false;
+    }
+  }
+
   async cleanup(): Promise<void> {
     if (this.healthCheckInterval) {
       clearInterval(this.healthCheckInterval);
@@ -806,6 +849,46 @@ app.post("/api/wallet-balance", async (req, res) => {
     });
   } catch (err) {
     res.json({ balance: "0", error: "Invalid Key" });
+  }
+});
+
+// New endpoint for changing RPC endpoint dynamically
+app.post("/api/settings/rpc", async (req, res) => {
+  const { rpcEndpoint } = req.body;
+  
+  if (!rpcEndpoint) {
+    return res.status(400).json({ error: "RPC endpoint is required" });
+  }
+
+  try {
+    console.log(`[API] Received request to change RPC to: ${rpcEndpoint}`);
+    
+    // Switch to the new RPC
+    const success = await rpcManager.switchToCustomRpc(rpcEndpoint);
+    
+    if (!success) {
+      return res.status(500).json({ error: "Failed to switch to the provided RPC endpoint" });
+    }
+
+    // Re-initialize contracts with new provider
+    const newProvider = rpcManager.getHttpProvider();
+    pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, newProvider);
+    biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, newProvider);
+    apeswapContract = new ethers.Contract(APESWAP_ROUTER, ROUTER_ABI, newProvider);
+    bakeryContract = new ethers.Contract(BAKERY_ROUTER, ROUTER_ABI, newProvider);
+    babyswapContract = new ethers.Contract(BABYSWAP_ROUTER, ROUTER_ABI, newProvider);
+    mdexContract = new ethers.Contract(MDEX_ROUTER, ROUTER_ABI, newProvider);
+
+    console.log("[API] Contracts re-initialized with new RPC");
+
+    res.json({ 
+      status: "ok", 
+      message: "RPC endpoint changed successfully",
+      currentRpc: rpcManager.getCurrentHttpUrl()
+    });
+  } catch (e: any) {
+    console.error("[API] Error changing RPC:", e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 

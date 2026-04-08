@@ -510,8 +510,19 @@ export default function App() {
     localStorage.setItem("arb_private_rpc", privateRpc);
     localStorage.setItem("arb_bloxr_auth", bloxrAuthHeader);
     localStorage.setItem("arb_use_mev_share", useMevShare.toString());
+    localStorage.setItem("arb_rpc", rpcEndpoint);
 
     try {
+      // Update RPC endpoint on server
+      await fetch("/api/settings/rpc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          rpcEndpoint
+        })
+      });
+
+      // Update advanced settings
       await fetch("/api/settings/advanced", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -522,7 +533,9 @@ export default function App() {
           bloxrAuthHeader
         })
       });
-    } catch (e) {}
+    } catch (e) {
+      console.error("Error saving settings:", e);
+    }
 
     addAlert(language === "ar" ? "تم حفظ التكوين بنجاح!" : "Configuration saved successfully!", 'success');
     setTimeout(() => setIsSaving(false), 2000);
