@@ -272,14 +272,36 @@ function setupMempoolListeners() {
   setupNewPairListener();
 }
 
+// WebSocket provider dedicated for stable event subscriptions (avoids HTTP filter expiry)
+let eventWsProvider: ethers.WebSocketProvider | null = null;
+
 function setupNewPairListener() {
   try {
-    const pancakeFactory = new ethers.Contract(PANCAKE_FACTORY, FACTORY_ABI, provider);
-    pancakeFactory.on("PairCreated", (token0, token1, pair) => {
+    // Use WebSocketProvider for stable event subscriptions (no eth_getFilterChanges expiry)
+    if (eventWsProvider) {
+      try { eventWsProvider.destroy(); } catch (_) {}
+    }
+    eventWsProvider = new ethers.WebSocketProvider(WS_NODES[0]);
+
+    eventWsProvider.websocket.on("error", (err: Error) => {
+      console.warn("[PairListener] WS error, reconnecting in 10s:", err.message);
+      setTimeout(setupNewPairListener, 10000);
+    });
+
+    eventWsProvider.websocket.on("close", () => {
+      console.warn("[PairListener] WS closed, reconnecting in 10s...");
+      setTimeout(setupNewPairListener, 10000);
+    });
+
+    const pancakeFactory = new ethers.Contract(PANCAKE_FACTORY, FACTORY_ABI, eventWsProvider);
+    pancakeFactory.on("PairCreated", (token0: string, token1: string, pair: string) => {
       console.log(`✨ [NEW PAIR] PancakeSwap: ${token0.slice(0,6)} / ${token1.slice(0,6)} at ${pair.slice(0,6)}`);
     });
-  } catch (e) {
+
+    console.log("[PairListener] Listening for new PancakeSwap pairs via WebSocket");
+  } catch (e: any) {
     console.error("Failed to setup New Pair Listener:", e.message);
+    setTimeout(setupNewPairListener, 15000);
   }
 }
 
