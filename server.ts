@@ -348,22 +348,22 @@ async function updatePrices() {
   checkLiquidityImbalance();
   
   const amountIn = ethers.parseEther("1"); // 1 BNB
-  const tokenPairs: Record<string, [string, string]> = {
-    "WBNB/BUSD": [WBNB, BUSD],
-    "BNB/USDT": [WBNB, USDT],
-    "ETH/BNB": [ETH, WBNB],
-    "CAKE/BNB": [CAKE, WBNB],
-    "BTCB/BNB": [BTCB, WBNB],
-    "ADA/BNB": [ADA, WBNB],
-    "DOT/BNB": [DOT, WBNB],
-    "XRP/BNB": [XRP, WBNB],
-    "LINK/BNB": [LINK, WBNB],
-    "FIL/BNB": [FIL, WBNB],
-    "LTC/BNB": [LTC, WBNB],
-    "SHIB/BNB": ["0x2859e4544C4bB03966803b044A93563Bd2D0DD4D", WBNB],
-    "DOGE/BNB": ["0xba2ae424d960c26247dd6c32edc70b295c744c43", WBNB],
-    "MATIC/BNB": ["0xcc42724c6683b7e57334c4e856f4c9965ed682bd", WBNB],
-    "AVAX/BNB": ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB]
+  const tokenPairs: Record<string, {path: [string, string], decimals: [number, number]}> = {
+    "WBNB/BUSD": { path: [WBNB, BUSD], decimals: [18, 18] },
+    "BNB/USDT": { path: [WBNB, USDT], decimals: [18, 18] },
+    "ETH/BNB": { path: [ETH, WBNB], decimals: [18, 18] },
+    "CAKE/BNB": { path: [CAKE, WBNB], decimals: [18, 18] },
+    "BTCB/BNB": { path: [BTCB, WBNB], decimals: [18, 18] }, // BTCB is 18 decimals on BSC
+    "ADA/BNB": { path: [ADA, WBNB], decimals: [18, 18] },
+    "DOT/BNB": { path: [DOT, WBNB], decimals: [18, 18] },
+    "XRP/BNB": { path: [XRP, WBNB], decimals: [18, 18] },
+    "LINK/BNB": { path: [LINK, WBNB], decimals: [18, 18] },
+    "FIL/BNB": { path: [FIL, WBNB], decimals: [18, 18] },
+    "LTC/BNB": { path: [LTC, WBNB], decimals: [18, 18] },
+    "SHIB/BNB": { path: ["0x2859e4544C4bB03966803b044A93563Bd2D0DD4D", WBNB], decimals: [18, 18] },
+    "DOGE/BNB": { path: ["0xba2ae424d960c26247dd6c32edc70b295c744c43", WBNB], decimals: [8, 18] },
+    "MATIC/BNB": { path: ["0xcc42724c6683b7e57334c4e856f4c9965ed682bd", WBNB], decimals: [18, 18] },
+    "AVAX/BNB": { path: ["0x1ce0c2827e2ef14d5c4f29a091d735a204794041", WBNB], decimals: [18, 18] }
   };
 
   const routers = {
@@ -381,14 +381,14 @@ async function updatePrices() {
     if (multicallProvider) {
       // Use Multicall for lightning fast updates
       const results: any = {};
-      const pairPromises = Object.entries(tokenPairs).map(async ([pairName, [tA, tB]]) => {
+      const pairPromises = Object.entries(tokenPairs).map(async ([pairName, {path: [tA, tB], decimals: [dA, dB]}]) => {
         results[pairName] = {};
+        const amountInLocal = ethers.parseUnits("1", dA);
         const dexPromises = Object.entries(routers).map(async ([dexName, routerAddr]) => {
           try {
             const contract = new ethers.Contract(routerAddr, ROUTER_ABI, multicallProvider);
-            const amounts = await contract.getAmountsOut(amountIn, [tA, tB]);
-            // Use 18 as default but try to be safe
-            results[pairName][dexName] = ethers.formatUnits(amounts[amounts.length - 1], 18);
+            const amounts = await contract.getAmountsOut(amountInLocal, [tA, tB]);
+            results[pairName][dexName] = ethers.formatUnits(amounts[amounts.length - 1], dB);
             if (pairName === "WBNB/BUSD") {
               if (dexName === "pancake") lastPrices.pancake = results[pairName][dexName];
               if (dexName === "biswap") lastPrices.biswap = results[pairName][dexName];
@@ -406,13 +406,14 @@ async function updatePrices() {
     } else {
       // Fallback to sequential if Multicall not ready
       const results: any = {};
-      const pairPromises = Object.entries(tokenPairs).map(async ([pairName, [tA, tB]]) => {
+      const pairPromises = Object.entries(tokenPairs).map(async ([pairName, {path: [tA, tB], decimals: [dA, dB]}]) => {
         results[pairName] = {};
+        const amountInLocal = ethers.parseUnits("1", dA);
         const dexPromises = Object.entries(routers).map(async ([dexName, routerAddr]) => {
           try {
             const contract = new ethers.Contract(routerAddr, ROUTER_ABI, provider);
-            const amounts = await contract.getAmountsOut(amountIn, [tA, tB]);
-            results[pairName][dexName] = ethers.formatUnits(amounts[1], 18);
+            const amounts = await contract.getAmountsOut(amountInLocal, [tA, tB]);
+            results[pairName][dexName] = ethers.formatUnits(amounts[amounts.length - 1], dB);
             success = true;
           } catch (e) {
             results[pairName][dexName] = "0";
@@ -759,8 +760,9 @@ app.post("/api/execute", async (req, res) => {
       const sellAmounts = await sellRouter.getAmountsOut(amountOutFromBuy, [outToken, borrowToken]);
       let finalAmount = sellAmounts[sellAmounts.length - 1];
       
-      let fee = (buyAmountIn * 3n) / 997n; // Approx 0.3% fee for flash loan
-      let amountToRepay = buyAmountIn + fee;
+      // Match contract fee calculation: repay = ((loanAmount * 10000) / 9975) + 10
+      let amountToRepay = ((buyAmountIn * 10000n) / 9975n) + 10n;
+      let fee = amountToRepay - buyAmountIn;
       
       let isProfitable = finalAmount > amountToRepay;
       let netChange = finalAmount - amountToRepay;
@@ -777,7 +779,7 @@ app.post("/api/execute", async (req, res) => {
       const spotAmountsB = await buyRouter.getAmountsOut(spotPriceA, [borrowToken, outToken]);
       const spotAmountsFinal = await sellRouter.getAmountsOut(spotAmountsB[spotAmountsB.length - 1], [outToken, borrowToken]);
       const spotFinal = spotAmountsFinal[spotAmountsFinal.length - 1];
-      const spotRepay = spotPriceA + (spotPriceA * 3n) / 997n;
+      const spotRepay = ((spotPriceA * 10000n) / 9975n) + 10n;
       const maxPossibleBps = ((spotFinal - spotRepay) * 10000n) / spotPriceA;
 
       console.log(`📊 Market Analysis:
@@ -818,7 +820,7 @@ app.post("/api/execute", async (req, res) => {
             const bAmounts = await buyRouter.getAmountsOut(mid, [borrowToken, outToken]);
             const sAmounts = await sellRouter.getAmountsOut(bAmounts[bAmounts.length - 1], [outToken, borrowToken]);
             const fAmount = sAmounts[sAmounts.length - 1];
-            const rNeeded = mid + (mid * 3n) / 997n;
+            const rNeeded = ((mid * 10000n) / 9975n) + 10n;
             const pBps = (fAmount - rNeeded) * 10000n / mid;
             
             if (pBps >= BigInt(minProfitBps)) {
