@@ -37,8 +37,8 @@ const RPC_NODES = [
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://bsc-dataseed.binance.org",
-  "wss://rpc.ankr.com/bsc/ws"
+  "wss://binance.ankr.com/bsc",
+  "wss://bsc-ws-node.nariox.org"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -256,7 +256,7 @@ function connectToWs(url: string, sourceName: string, headers: any = {}) {
   }
 }
 
-setupMempoolListeners();
+
 
 async function switchRpc() {
   if (isSwitching) return;
@@ -358,9 +358,13 @@ const FTM = ethers.getAddress("0xad29abb318791d579433d831ed122afeaf297ff5".toLow
 const ATOM = ethers.getAddress("0x0eb3a705fc54725037cc9e008bdede697f62f335".toLowerCase());
 const NEAR = ethers.getAddress("0x1fa4a73a3f01f7741a8ef940a023e3acc6f9e720".toLowerCase());
 const ALGO = ethers.getAddress("0xe79a6d4b9632b8d28641f42205049ce9997a3298".toLowerCase());
+
 const VET = ethers.getAddress("0x6fd7604651d073c84df356d227f758e2a2366bd2".toLowerCase());
 const SAND = ethers.getAddress("0x3764be110aa3415617d362f306a96146c4e3955d".toLowerCase());
 const MANA = ethers.getAddress("0x484797e666e0d31f489565b395775464ec33421c".toLowerCase());
+
+// Now that all addresses are defined, start listeners
+setupMempoolListeners();
 
 let pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
 let biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
