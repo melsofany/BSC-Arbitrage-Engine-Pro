@@ -17,10 +17,7 @@ import {
   EyeOff,
   ShieldAlert,
   ArrowRight,
-  Plus,
-  Lock,
-  LogOut,
-  Shield
+  Plus
 } from "lucide-react";
 import { 
   LineChart, 
@@ -256,18 +253,6 @@ export default function App() {
   const [bloxrAuthHeader, setBloxrAuthHeader] = useState(() => localStorage.getItem("arb_bloxr_auth") || "");
   const [useMevShare, setUseMevShare] = useState(() => localStorage.getItem("arb_use_mev_share") === "true");
   const [mevStatus, setMevStatus] = useState<any>(null);
-  const [scanResults, setScanResults] = useState<any[]>([]);
-  const [scanTime, setScanTime] = useState<number>(0);
-  const [isScanning, setIsScanning] = useState(false);
-
-  // Auth State
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [authChecked, setAuthChecked] = useState(false);
-  const [sessionToken, setSessionToken] = useState(() => localStorage.getItem("arb_session") || "");
-  const [loginPassword, setLoginPassword] = useState("");
-  const [loginError, setLoginError] = useState("");
-  const [loginLoading, setLoginLoading] = useState(false);
-  const [showLoginPw, setShowLoginPw] = useState(false);
 
   // New Settings State
   const [language, setLanguage] = useState<Language>(() => {
@@ -277,7 +262,7 @@ export default function App() {
   const [privateKey, setPrivateKey] = useState(() => localStorage.getItem("arb_pk") || "");
   const [contractAddress, setContractAddress] = useState(() => localStorage.getItem("arb_ca") || "");
   const [rpcEndpoint, setRpcEndpoint] = useState(() => localStorage.getItem("arb_rpc") || "https://bsc-dataseed.binance.org/");
-  const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.15");
+  const [minProfit, setMinProfit] = useState(() => localStorage.getItem("arb_min_profit") || "0.35");
   const [maxGas, setMaxGas] = useState(() => localStorage.getItem("arb_max_gas") || "5");
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [isContractVerified, setIsContractVerified] = useState(false);
@@ -517,87 +502,6 @@ export default function App() {
     };
   }, [language, t.arbitrageOpp, t.scanningBlocks, t.pendingTxDetected, useFlashLoan, loanAmount, simulationAmount, minProfit]);
 
-  // Auth: verify stored token on load
-  useEffect(() => {
-    const verify = async () => {
-      const stored = localStorage.getItem("arb_session") || "";
-      if (!stored) { setAuthChecked(true); return; }
-      try {
-        const res = await fetch("/api/auth/verify", {
-          headers: { "x-session-token": stored }
-        });
-        const data = await res.json();
-        if (data.valid) {
-          setSessionToken(stored);
-          setIsAuthenticated(true);
-        } else {
-          localStorage.removeItem("arb_session");
-          setSessionToken("");
-        }
-      } catch (_) {}
-      setAuthChecked(true);
-    };
-    verify();
-  }, []);
-
-  const handleLogin = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setLoginLoading(true);
-    setLoginError("");
-    try {
-      const res = await fetch("/api/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: loginPassword })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        setLoginError(data.error || "فشل تسجيل الدخول");
-      } else {
-        localStorage.setItem("arb_session", data.token);
-        setSessionToken(data.token);
-        setIsAuthenticated(true);
-        setLoginPassword("");
-      }
-    } catch (_) {
-      setLoginError("خطأ في الاتصال بالسيرفر");
-    }
-    setLoginLoading(false);
-  };
-
-  const handleLogout = async () => {
-    try {
-      await fetch("/api/auth/logout", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-session-token": sessionToken },
-        body: JSON.stringify({ token: sessionToken })
-      });
-    } catch (_) {}
-    localStorage.removeItem("arb_session");
-    setSessionToken("");
-    setIsAuthenticated(false);
-    setLoginPassword("");
-  };
-
-  // Smart Scanner - fetch best opportunities every 15s
-  useEffect(() => {
-    const fetchScan = async () => {
-      setIsScanning(true);
-      try {
-        const res = await fetch("/api/scan-opportunities");
-        if (res.ok) {
-          const data = await res.json();
-          setScanResults(data.opportunities || []);
-          setScanTime(data.scannedAt || Date.now());
-        }
-      } catch (_) {}
-      setIsScanning(false);
-    };
-    fetchScan();
-    const interval = setInterval(fetchScan, 15000);
-    return () => clearInterval(interval);
-  }, []);
-
   const handleSave = async () => {
     setIsSaving(true);
     localStorage.setItem("arb_use_flash", useFlashLoan.toString());
@@ -703,115 +607,6 @@ export default function App() {
   const currentDiff = prices ? Math.abs(parseFloat(prices.pancake) - parseFloat(prices.biswap)) : 0;
   const currentDiffPercent = prices ? (currentDiff / Math.min(parseFloat(prices.pancake), parseFloat(prices.biswap))) * 100 : 0;
 
-  // Loading while verifying token
-  if (!authChecked) {
-    return (
-      <div className="min-h-screen bg-[#0a0a0c] flex items-center justify-center">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 bg-yellow-500 rounded-2xl flex items-center justify-center shadow-lg shadow-yellow-500/30 animate-pulse">
-            <Zap className="text-black w-7 h-7 fill-current" />
-          </div>
-          <p className="text-slate-400 text-sm">جاري التحميل...</p>
-        </div>
-      </div>
-    );
-  }
-
-  // Login Page
-  if (!isAuthenticated) {
-    return (
-      <div className="min-h-screen bg-[#0a0a0c] flex items-center justify-center p-4" dir="rtl">
-        <motion.div
-          initial={{ opacity: 0, y: 30 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.5 }}
-          className="w-full max-w-md"
-        >
-          {/* Logo */}
-          <div className="flex flex-col items-center mb-10">
-            <div className="w-16 h-16 bg-yellow-500 rounded-2xl flex items-center justify-center shadow-2xl shadow-yellow-500/30 mb-4">
-              <Zap className="text-black w-9 h-9 fill-current" />
-            </div>
-            <h1 className="text-2xl font-bold text-white tracking-tight">BSC Arbitrage Engine</h1>
-            <p className="text-slate-500 text-sm mt-1">محرك المراجحة على شبكة BSC</p>
-          </div>
-
-          {/* Card */}
-          <div className="bg-[#111114] border border-white/5 rounded-3xl p-8 shadow-2xl">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="w-10 h-10 bg-yellow-500/10 rounded-xl flex items-center justify-center">
-                <Shield size={20} className="text-yellow-500" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-white">تسجيل الدخول</h2>
-                <p className="text-xs text-slate-500">أدخل كلمة المرور للمتابعة</p>
-              </div>
-            </div>
-
-            <form onSubmit={handleLogin} className="space-y-5">
-              <div>
-                <label className="text-xs font-medium text-slate-400 uppercase tracking-wider block mb-2">
-                  كلمة المرور
-                </label>
-                <div className="relative">
-                  <Lock size={16} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500" />
-                  <input
-                    type={showLoginPw ? "text" : "password"}
-                    value={loginPassword}
-                    onChange={e => { setLoginPassword(e.target.value); setLoginError(""); }}
-                    placeholder="أدخل كلمة المرور"
-                    autoFocus
-                    className="w-full bg-white/5 border border-white/10 rounded-xl px-4 py-3 pr-10 pl-10 text-white placeholder-slate-600 focus:outline-none focus:border-yellow-500/50 focus:bg-white/8 transition-all text-sm"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowLoginPw(v => !v)}
-                    className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
-                  >
-                    {showLoginPw ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-              </div>
-
-              {loginError && (
-                <motion.div
-                  initial={{ opacity: 0, y: -5 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="flex items-center gap-2 text-red-400 text-sm bg-red-500/10 border border-red-500/20 rounded-xl px-4 py-3"
-                >
-                  <AlertTriangle size={16} />
-                  <span>{loginError}</span>
-                </motion.div>
-              )}
-
-              <button
-                type="submit"
-                disabled={loginLoading || !loginPassword}
-                className="w-full py-3.5 bg-yellow-500 hover:bg-yellow-400 disabled:bg-white/10 disabled:text-slate-500 text-black font-bold rounded-xl transition-all transform active:scale-95 shadow-lg shadow-yellow-500/20 flex items-center justify-center gap-2"
-              >
-                {loginLoading ? (
-                  <>
-                    <RefreshCw size={18} className="animate-spin" />
-                    <span>جاري التحقق...</span>
-                  </>
-                ) : (
-                  <>
-                    <Zap size={18} fill="currentColor" />
-                    <span>دخول</span>
-                  </>
-                )}
-              </button>
-            </form>
-          </div>
-
-          <p className="text-center text-slate-600 text-xs mt-6">
-            محمي بكلمة مرور · BSC Arbitrage Engine Pro
-          </p>
-        </motion.div>
-      </div>
-    );
-  }
-
   return (
     <div className={cn(
       "min-h-screen bg-[#0a0a0c] text-slate-200 font-sans selection:bg-yellow-500/30",
@@ -863,16 +658,6 @@ export default function App() {
           >
             <Languages size={20} />
             <span className="hidden md:block font-semibold text-sm">{language === "en" ? "العربية" : "English"}</span>
-          </button>
-
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center gap-3 px-4 py-3 rounded-2xl bg-red-500/5 hover:bg-red-500/15 text-red-400 transition-all border border-red-500/10 hover:border-red-500/30"
-          >
-            <LogOut size={20} />
-            <span className="hidden md:block font-semibold text-sm">
-              {language === "ar" ? "تسجيل الخروج" : "Logout"}
-            </span>
           </button>
 
           <div className="bg-white/5 rounded-2xl p-4 hidden md:block">
@@ -1324,71 +1109,6 @@ export default function App() {
                     ))
                   )}
                 </AnimatePresence>
-              </div>
-
-              {/* ===== SMART SCANNER SECTION ===== */}
-              <div className="bg-[#111114] border border-white/5 rounded-3xl p-6 shadow-2xl">
-                <div className="flex items-center justify-between mb-5">
-                  <div className="flex items-center gap-3">
-                    <div className={cn("w-2 h-2 rounded-full", isScanning ? "bg-yellow-500 animate-ping" : "bg-green-500")} />
-                    <h3 className="text-base font-bold text-white">
-                      {language === "ar" ? "🔍 محرك المسح الذكي – أفضل الفرص الآن" : "🔍 Smart Scanner – Best Opportunities Now"}
-                    </h3>
-                  </div>
-                  <span className="text-[10px] text-slate-500">
-                    {scanTime > 0 ? (language === "ar" ? `آخر مسح: ${new Date(scanTime).toLocaleTimeString()}` : `Last scan: ${new Date(scanTime).toLocaleTimeString()}`) : ""}
-                  </span>
-                </div>
-
-                {scanResults.length === 0 ? (
-                  <div className="text-center py-8">
-                    <RefreshCw size={24} className="text-slate-600 mx-auto mb-3 animate-spin" />
-                    <p className="text-slate-500 text-sm">
-                      {language === "ar" ? "جاري مسح جميع الأزواج..." : "Scanning all pairs..."}
-                    </p>
-                  </div>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="text-[10px] text-slate-500 uppercase tracking-wider border-b border-white/5">
-                          <th className="pb-3 text-start font-medium">{language === "ar" ? "الزوج" : "Pair"}</th>
-                          <th className="pb-3 text-start font-medium">{language === "ar" ? "شراء من" : "Buy On"}</th>
-                          <th className="pb-3 text-start font-medium">{language === "ar" ? "بيع في" : "Sell On"}</th>
-                          <th className="pb-3 text-end font-medium">{language === "ar" ? "الفارق" : "Spread"}</th>
-                          <th className="pb-3 text-end font-medium">{language === "ar" ? "النوع" : "Type"}</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/5">
-                        {scanResults.map((r, i) => (
-                          <tr key={i} className="hover:bg-white/5 transition-colors">
-                            <td className="py-3 font-mono text-xs text-white font-bold">{r.pair}</td>
-                            <td className="py-3 text-green-400 font-medium">{r.buyDex}</td>
-                            <td className="py-3 text-blue-400 font-medium">{r.sellDex}</td>
-                            <td className="py-3 text-end">
-                              <span className={cn(
-                                "font-bold px-2 py-1 rounded text-xs",
-                                r.spreadBps >= 30 ? "bg-green-500/20 text-green-400" :
-                                r.spreadBps >= 15 ? "bg-yellow-500/20 text-yellow-400" :
-                                "bg-white/5 text-slate-400"
-                              )}>
-                                {r.spreadBps} bps ({r.spreadPercent.toFixed(3)}%)
-                              </span>
-                            </td>
-                            <td className="py-3 text-end">
-                              <span className={cn(
-                                "text-[10px] px-2 py-0.5 rounded font-bold uppercase",
-                                r.type === "triangular" ? "bg-purple-500/10 text-purple-400" : "bg-blue-500/10 text-blue-400"
-                              )}>
-                                {r.type === "triangular" ? (language === "ar" ? "مثلثي" : "Triangular") : (language === "ar" ? "مباشر" : "Direct")}
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
               </div>
             </div>
           )}
