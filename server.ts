@@ -395,6 +395,22 @@ async function performSwitch() {
   }
 }
 
+// FLASH_LOAN_FEE_BPS: PancakeSwap flash loan fee = 3/997 ≈ 30.09 bps
+// DEX swap fees are already included in getAmountsOut (AMM formula)
+const FLASH_LOAN_FEE_NUMERATOR = 3n;
+const FLASH_LOAN_FEE_DENOMINATOR = 997n;
+
+interface ArbitrageOpportunity {
+  pair: string;
+  buyDex: string;
+  sellDex: string;
+  buyRouter: string;
+  sellRouter: string;
+  netProfitBps: number;
+  roundTripReturn: string;
+  direction: string;
+}
+
 let lastPrices = {
   pancake: "0",
   biswap: "0",
@@ -403,6 +419,7 @@ let lastPrices = {
   babyswap: "0",
   mdex: "0",
   pairs: {} as Record<string, any>,
+  opportunities: [] as ArbitrageOpportunity[],
   timestamp: Date.now()
 };
 
@@ -597,10 +614,87 @@ async function updatePrices() {
     
     if (!success) {
       await switchRpc();
+    } else {
+      // Calculate real arbitrage opportunities after ALL fees for each pair + direction
+      await calculateRealOpportunities(tokenPairs, routers);
     }
   } catch (error: any) {
     console.error("Error updating prices:", error.message);
     await switchRpc();
+  }
+}
+
+// Calculate real net profit (after swap fees + flash loan fee) for every pair × DEX combination
+async function calculateRealOpportunities(
+  tokenPairs: Record<string, [string, string]>,
+  routers: Record<string, string>
+) {
+  const amountIn = ethers.parseEther("1");
+  // Flash loan repayment: amountIn + (amountIn * 3 / 997)
+  const flashFee = (amountIn * FLASH_LOAN_FEE_NUMERATOR) / FLASH_LOAN_FEE_DENOMINATOR;
+  const repayNeeded = amountIn + flashFee;
+
+  const routerEntries = Object.entries(routers);
+  const opportunities: ArbitrageOpportunity[] = [];
+  const readProvider = multicallProvider || provider;
+
+  const checks: Promise<void>[] = [];
+
+  for (const [pairName, [tA, tB]] of Object.entries(tokenPairs)) {
+    for (let i = 0; i < routerEntries.length; i++) {
+      for (let j = 0; j < routerEntries.length; j++) {
+        if (i === j) continue;
+        const [buyDexName, buyRouterAddr] = routerEntries[i];
+        const [sellDexName, sellRouterAddr] = routerEntries[j];
+
+        checks.push((async () => {
+          try {
+            const buyContract = new ethers.Contract(buyRouterAddr, ROUTER_ABI, readProvider);
+            const sellContract = new ethers.Contract(sellRouterAddr, ROUTER_ABI, readProvider);
+
+            // Step 1: buy tB with amountIn tA on buyDex (fees included in AMM)
+            const buyAmounts = await buyContract.getAmountsOut(amountIn, [tA, tB]);
+            const amountOutBuy: bigint = buyAmounts[buyAmounts.length - 1];
+            if (amountOutBuy === 0n) return;
+
+            // Step 2: sell tB back to tA on sellDex (fees included in AMM)
+            const sellAmounts = await sellContract.getAmountsOut(amountOutBuy, [tB, tA]);
+            const finalAmount: bigint = sellAmounts[sellAmounts.length - 1];
+
+            // Step 3: net profit after flash loan fee
+            const netProfit = finalAmount - repayNeeded;
+            if (netProfit <= 0n) return;
+
+            const profitBps = Number((netProfit * 10000n) / amountIn);
+            if (profitBps <= 0) return;
+
+            const roundTripReturn = ethers.formatEther(finalAmount);
+            opportunities.push({
+              pair: pairName,
+              buyDex: buyDexName,
+              sellDex: sellDexName,
+              buyRouter: buyRouterAddr,
+              sellRouter: sellRouterAddr,
+              netProfitBps: profitBps,
+              roundTripReturn,
+              direction: `${buyDexName} → ${sellDexName}`
+            });
+
+            console.log(`💰 [REAL OPPORTUNITY] ${pairName} | ${buyDexName} → ${sellDexName} | Net Profit: ${profitBps} bps after all fees`);
+          } catch (_) {}
+        })());
+      }
+    }
+  }
+
+  // Run all checks in parallel (batched via multicall or parallel promises)
+  await Promise.all(checks);
+
+  // Sort by highest profit first
+  opportunities.sort((a, b) => b.netProfitBps - a.netProfitBps);
+  lastPrices.opportunities = opportunities;
+  if (opportunities.length > 0) {
+    console.log(`✅ Found ${opportunities.length} real opportunity/ies after fees. Best: ${opportunities[0].pair} ${opportunities[0].direction} (${opportunities[0].netProfitBps} bps)`);
   }
 }
 
