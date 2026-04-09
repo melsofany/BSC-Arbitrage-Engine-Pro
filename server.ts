@@ -207,26 +207,48 @@ function setupMempoolListeners() {
   setupNewPairListener();
 }
 
-function setupNewPairListener() {
+// Track last block for new pair polling
+let newPairLastBlock = 0;
+const PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
+
+// Poll for new pairs using getLogs (avoids eth_newFilter which is blocked by some RPC providers)
+async function pollNewPairs() {
   try {
-    const pancakeFactory = new ethers.Contract(PANCAKE_FACTORY, FACTORY_ABI, provider);
-    pancakeFactory.on("PairCreated", (token0, token1, pair) => {
-      console.log(`✨ [NEW PAIR] PancakeSwap: ${token0.slice(0,6)} / ${token1.slice(0,6)} at ${pair.slice(0,6)}`);
-    });
-    // Catch async eth_newFilter errors silently (some RPCs like Ankr block filter subscriptions)
-    const prov = pancakeFactory.runner && (pancakeFactory.runner as any).provider;
-    if (prov && typeof prov.on === 'function') {
-      prov.on('error', (err: any) => {
-        const msg = err && err.message ? err.message : String(err);
-        if (msg.includes('Origin not allowed') || msg.includes('newFilter') || (err && err.code === 'BAD_DATA')) {
-          return; // silently ignore - this RPC does not support eth_newFilter
-        }
-        console.warn('[PairCreated listener] Provider error:', msg);
-      });
+    const currentBlock = await provider.getBlockNumber();
+    if (newPairLastBlock === 0) {
+      newPairLastBlock = currentBlock;
+      return;
     }
+    if (currentBlock <= newPairLastBlock) return;
+    const fromBlock = newPairLastBlock + 1;
+    const toBlock = Math.min(currentBlock, fromBlock + 100); // max 100 blocks at a time
+    const logs = await provider.getLogs({
+      address: PANCAKE_FACTORY,
+      topics: [PAIR_CREATED_TOPIC],
+      fromBlock,
+      toBlock
+    });
+    for (const log of logs) {
+      try {
+        const iface = new ethers.Interface(["event PairCreated(address indexed token0, address indexed token1, address pair, uint)"]);
+        const decoded = iface.parseLog(log);
+        if (decoded) {
+          const t0 = decoded.args[0] as string;
+          const t1 = decoded.args[1] as string;
+          const pair = decoded.args[2] as string;
+          console.log(`✨ [NEW PAIR] PancakeSwap: ${t0.slice(0,6)} / ${t1.slice(0,6)} at ${pair.slice(0,6)}`);
+        }
+      } catch (e) {}
+    }
+    newPairLastBlock = toBlock;
   } catch (e: any) {
-    console.warn('New Pair Listener skipped (eth_newFilter not supported):', e.message);
+    // silently ignore getLogs errors
   }
+}
+
+function setupNewPairListener() {
+  // Use polling every 60s instead of eth_newFilter (which is blocked by some RPC providers like Ankr)
+  setInterval(pollNewPairs, 60000);
 }
 
 function connectToWs(url: string, sourceName: string, headers: any = {}) {
@@ -633,20 +655,27 @@ app.get("/api/prices", (req, res) => {
 app.post("/api/verify-contract", async (req, res) => {
   const { contractAddress, rpcEndpoint } = req.body;
   if (!contractAddress) return res.json({ verified: false, reason: "no_address" });
-  
-  try {
-    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
-    const timeoutMs = 8000;
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("RPC timeout after " + timeoutMs + "ms")), timeoutMs)
-    );
-    const code = await Promise.race([checkProvider.getCode(contractAddress), timeoutPromise]) as string;
-    const isContract = code !== "0x" && code.length > 2;
-    res.json({ verified: isContract, reason: isContract ? "ok" : "not_a_contract" });
-  } catch (err: any) {
-    console.error("[verify-contract] error:", err.message);
-    res.json({ verified: false, reason: err.message });
+
+  // Try primary endpoint first, then fallback to public nodes
+  const endpointsToTry: string[] = rpcEndpoint
+    ? [rpcEndpoint, ...DEFAULT_RPC_NODES.slice(0, 2)]
+    : DEFAULT_RPC_NODES.slice(0, 3);
+
+  for (const endpoint of endpointsToTry) {
+    try {
+      const checkProvider = new ethers.JsonRpcProvider(endpoint);
+      const timeoutPromise = new Promise<never>((_, reject) =>
+        setTimeout(() => reject(new Error("timeout")), 8000)
+      );
+      const code = await Promise.race([checkProvider.getCode(contractAddress), timeoutPromise]);
+      const isContract = code !== "0x" && code.length > 2;
+      return res.json({ verified: isContract, reason: isContract ? "ok" : "not_a_contract" });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[verify-contract] ${endpoint} failed: ${msg}`);
+    }
   }
+  res.json({ verified: false, reason: "all_rpc_endpoints_failed" });
 });
 
 app.post("/api/wallet-balance", async (req, res) => {
