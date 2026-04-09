@@ -37,8 +37,8 @@ const RPC_NODES = [
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://bsc-dataseed.binance.org",
-  "wss://rpc.ankr.com/bsc/ws"
+  "wss://bsc-ws-node.nariox.org",
+  "wss://rpc.ankr.com/bsc"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -223,6 +223,16 @@ function connectToWs(url: string, sourceName: string, headers: any = {}) {
 
     ws.on("open", () => {
       console.log(`[${sourceName}] Mempool WebSocket connected to ${url}`);
+      
+      // Keep-alive ping
+      const pingInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.ping();
+        } else {
+          clearInterval(pingInterval);
+        }
+      }, 30000);
+
       ws.send(JSON.stringify({
         jsonrpc: "2.0",
         id: 1,
@@ -611,7 +621,7 @@ app.post("/api/verify-contract", async (req, res) => {
   if (!contractAddress) return res.json({ verified: false });
   
   try {
-    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
+    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint, bscNetwork, { staticNetwork: true }) : provider;
     const code = await checkProvider.getCode(contractAddress);
     res.json({ verified: code !== "0x" && code.length > 2 });
   } catch (err) {
@@ -624,7 +634,7 @@ app.post("/api/wallet-balance", async (req, res) => {
   if (!privateKey) return res.json({ balance: "0" });
 
   try {
-    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
+    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint, bscNetwork, { staticNetwork: true }) : provider;
     const wallet = new ethers.Wallet(privateKey, checkProvider);
     const balance = await checkProvider.getBalance(wallet.address);
     res.json({ 
@@ -641,7 +651,7 @@ app.post("/api/settings/advanced", async (req, res) => {
   
   try {
     if (privateRpc) {
-      privateRpcProvider = new ethers.JsonRpcProvider(privateRpc);
+      privateRpcProvider = new ethers.JsonRpcProvider(privateRpc, bscNetwork, { staticNetwork: true });
       console.log("Private RPC configured:", privateRpc);
     }
     
