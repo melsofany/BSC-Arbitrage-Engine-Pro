@@ -37,8 +37,9 @@ const RPC_NODES = [
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://bsc-ws-node.nariox.org",
-  "wss://rpc.ankr.com/bsc"
+  "wss://rpc.ankr.com/bsc",
+  "wss://1rpc.io/bnb",
+  "wss://bnb.publicnode.com"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -186,9 +187,11 @@ function setupMempoolListeners() {
   });
   wsProviders = [];
 
-  // 1. Standard BSC Nodes (Concurrent)
-  WS_NODES.slice(0, 2).forEach((url, idx) => {
-    connectToWs(url, `Standard-${idx}`);
+  // 1. Standard BSC Nodes (Concurrent with staggering)
+  WS_NODES.forEach((url, idx) => {
+    setTimeout(() => {
+      connectToWs(url, `Standard-${idx}`);
+    }, idx * 2000); // Stagger connections by 2s
   });
 
   // 2. BloXroute (if configured)
@@ -217,7 +220,7 @@ function connectToWs(url: string, sourceName: string, headers: any = {}) {
   try {
     const ws = new WebSocket(url, {
       headers: headers,
-      handshakeTimeout: 20000, // Increased to 20s
+      handshakeTimeout: 30000, // Increased to 30s
       followRedirects: true
     });
 
