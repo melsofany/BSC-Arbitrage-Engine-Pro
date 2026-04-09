@@ -9,7 +9,7 @@ import WebSocket from "ws";
 console.log("SERVER STARTING - MEV ENGINE ACTIVATED");
 
 const app = express();
-const PORT = parseInt(process.env["PORT"] ?? "3000", 10);
+const PORT = 3000;
 
 app.use(express.json());
 
@@ -27,21 +27,18 @@ let privateRpcProvider: ethers.JsonRpcProvider | null = null;
 let multicallProvider: any = null;
 let wsProviders: WebSocket[] = [];
 
-// BSC RPC URLs - Primary comes from BSC_RPC_URL env var, then fallbacks
-const DEFAULT_RPC_NODES = [
+// BSC RPC URLs - Using multiple fallbacks for reliability
+const RPC_NODES = [
   "https://bsc-dataseed.binance.org/",
   "https://bsc-rpc.publicnode.com",
   "https://rpc.ankr.com/bsc",
   "https://bsc-dataseed1.defibit.io/"
 ];
-const RPC_NODES: string[] = process.env["BSC_RPC_URL"]
-  ? [process.env["BSC_RPC_URL"] as string, ...DEFAULT_RPC_NODES]
-  : DEFAULT_RPC_NODES;
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://bsc-ws-node.nariox.org",
-  "wss://binance.ankr.com"
+  "wss://bsc-dataseed.binance.org",
+  "wss://rpc.ankr.com/bsc/ws"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -78,8 +75,6 @@ verifyInitialConnection();
 
 let switchRetries = 0;
 let isSwitching = false;
-let lastSwitchTime = 0;
-const MIN_SWITCH_INTERVAL_MS = 20000; // min 20s between RPC switches
 
 async function initMulticall() {
   try {
@@ -207,48 +202,15 @@ function setupMempoolListeners() {
   setupNewPairListener();
 }
 
-// Track last block for new pair polling
-let newPairLastBlock = 0;
-const PAIR_CREATED_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9";
-
-// Poll for new pairs using getLogs (avoids eth_newFilter which is blocked by some RPC providers)
-async function pollNewPairs() {
-  try {
-    const currentBlock = await provider.getBlockNumber();
-    if (newPairLastBlock === 0) {
-      newPairLastBlock = currentBlock;
-      return;
-    }
-    if (currentBlock <= newPairLastBlock) return;
-    const fromBlock = newPairLastBlock + 1;
-    const toBlock = Math.min(currentBlock, fromBlock + 100); // max 100 blocks at a time
-    const logs = await provider.getLogs({
-      address: PANCAKE_FACTORY,
-      topics: [PAIR_CREATED_TOPIC],
-      fromBlock,
-      toBlock
-    });
-    for (const log of logs) {
-      try {
-        const iface = new ethers.Interface(["event PairCreated(address indexed token0, address indexed token1, address pair, uint)"]);
-        const decoded = iface.parseLog(log);
-        if (decoded) {
-          const t0 = decoded.args[0] as string;
-          const t1 = decoded.args[1] as string;
-          const pair = decoded.args[2] as string;
-          console.log(`✨ [NEW PAIR] PancakeSwap: ${t0.slice(0,6)} / ${t1.slice(0,6)} at ${pair.slice(0,6)}`);
-        }
-      } catch (e) {}
-    }
-    newPairLastBlock = toBlock;
-  } catch (e: any) {
-    // silently ignore getLogs errors
-  }
-}
-
 function setupNewPairListener() {
-  // Use polling every 60s instead of eth_newFilter (which is blocked by some RPC providers like Ankr)
-  setInterval(pollNewPairs, 60000);
+  try {
+    const pancakeFactory = new ethers.Contract(PANCAKE_FACTORY, FACTORY_ABI, provider);
+    pancakeFactory.on("PairCreated", (token0, token1, pair) => {
+      console.log(`✨ [NEW PAIR] PancakeSwap: ${token0.slice(0,6)} / ${token1.slice(0,6)} at ${pair.slice(0,6)}`);
+    });
+  } catch (e) {
+    console.error("Failed to setup New Pair Listener:", e.message);
+  }
 }
 
 function connectToWs(url: string, sourceName: string, headers: any = {}) {
@@ -294,16 +256,12 @@ function connectToWs(url: string, sourceName: string, headers: any = {}) {
   }
 }
 
-
+setupMempoolListeners();
 
 async function switchRpc() {
   if (isSwitching) return;
-  const now = Date.now();
-  if (now - lastSwitchTime < MIN_SWITCH_INTERVAL_MS) {
-    return; // cooldown: too soon to switch again
-  }
   isSwitching = true;
-  lastSwitchTime = now;
+  
   try {
     await performSwitch();
   } finally {
@@ -400,13 +358,9 @@ const FTM = ethers.getAddress("0xad29abb318791d579433d831ed122afeaf297ff5".toLow
 const ATOM = ethers.getAddress("0x0eb3a705fc54725037cc9e008bdede697f62f335".toLowerCase());
 const NEAR = ethers.getAddress("0x1fa4a73a3f01f7741a8ef940a023e3acc6f9e720".toLowerCase());
 const ALGO = ethers.getAddress("0xe79a6d4b9632b8d28641f42205049ce9997a3298".toLowerCase());
-
 const VET = ethers.getAddress("0x6fd7604651d073c84df356d227f758e2a2366bd2".toLowerCase());
 const SAND = ethers.getAddress("0x3764be110aa3415617d362f306a96146c4e3955d".toLowerCase());
 const MANA = ethers.getAddress("0x484797e666e0d31f489565b395775464ec33421c".toLowerCase());
-
-// Now that all addresses are defined, start listeners
-setupMempoolListeners();
 
 let pancakeContract = new ethers.Contract(PANCAKE_ROUTER, ROUTER_ABI, provider);
 let biswapContract = new ethers.Contract(BISWAP_ROUTER, ROUTER_ABI, provider);
@@ -654,28 +608,15 @@ app.get("/api/prices", (req, res) => {
 
 app.post("/api/verify-contract", async (req, res) => {
   const { contractAddress, rpcEndpoint } = req.body;
-  if (!contractAddress) return res.json({ verified: false, reason: "no_address" });
-
-  // Try primary endpoint first, then fallback to public nodes
-  const endpointsToTry: string[] = rpcEndpoint
-    ? [rpcEndpoint, ...DEFAULT_RPC_NODES.slice(0, 2)]
-    : DEFAULT_RPC_NODES.slice(0, 3);
-
-  for (const endpoint of endpointsToTry) {
-    try {
-      const checkProvider = new ethers.JsonRpcProvider(endpoint);
-      const timeoutPromise = new Promise<never>((_, reject) =>
-        setTimeout(() => reject(new Error("timeout")), 8000)
-      );
-      const code = await Promise.race([checkProvider.getCode(contractAddress), timeoutPromise]);
-      const isContract = code !== "0x" && code.length > 2;
-      return res.json({ verified: isContract, reason: isContract ? "ok" : "not_a_contract" });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn(`[verify-contract] ${endpoint} failed: ${msg}`);
-    }
+  if (!contractAddress) return res.json({ verified: false });
+  
+  try {
+    const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
+    const code = await checkProvider.getCode(contractAddress);
+    res.json({ verified: code !== "0x" && code.length > 2 });
+  } catch (err) {
+    res.json({ verified: false });
   }
-  res.json({ verified: false, reason: "all_rpc_endpoints_failed" });
 });
 
 app.post("/api/wallet-balance", async (req, res) => {
