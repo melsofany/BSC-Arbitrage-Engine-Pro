@@ -615,14 +615,20 @@ app.get("/api/prices", (req, res) => {
 
 app.post("/api/verify-contract", async (req, res) => {
   const { contractAddress, rpcEndpoint } = req.body;
-  if (!contractAddress) return res.json({ verified: false });
+  if (!contractAddress) return res.json({ verified: false, reason: "no_address" });
   
   try {
     const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
-    const code = await checkProvider.getCode(contractAddress);
-    res.json({ verified: code !== "0x" && code.length > 2 });
-  } catch (err) {
-    res.json({ verified: false });
+    const timeoutMs = 8000;
+    const timeoutPromise = new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("RPC timeout after " + timeoutMs + "ms")), timeoutMs)
+    );
+    const code = await Promise.race([checkProvider.getCode(contractAddress), timeoutPromise]);
+    const isContract = code !== "0x" && code.length > 2;
+    res.json({ verified: isContract, reason: isContract ? "ok" : "not_a_contract" });
+  } catch (err: any) {
+    console.error("[verify-contract] error:", err.message);
+    res.json({ verified: false, reason: err.message });
   }
 });
 
