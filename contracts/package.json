@@ -1,0 +1,24 @@
+{
+  "name": "multipath-flash-arbitrage",
+  "version": "2.0.0",
+  "description": "Multi-Path Flash Arbitrage Engine for BSC - Supports V2/V3 DEXs with full event logging",
+  "scripts": {
+    "compile": "npx hardhat compile",
+    "deploy:testnet": "npx hardhat run deploy/deploy.ts --network bscTestnet",
+    "deploy:mainnet": "npx hardhat run deploy/deploy.ts --network bsc",
+    "test:fork": "npx hardhat run scripts/test_arbitrage.ts --network hardhat",
+    "monitor": "npx ts-node scripts/monitor_events.ts",
+    "clean": "npx hardhat clean"
+  },
+  "dependencies": {
+    "@openzeppelin/contracts": "^5.0.0",
+    "dotenv": "^16.3.1",
+    "ethers": "^6.9.0"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "hardhat": "^2.19.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.3.3"
+  }
+}
