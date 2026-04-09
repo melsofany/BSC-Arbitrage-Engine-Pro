@@ -78,6 +78,8 @@ verifyInitialConnection();
 
 let switchRetries = 0;
 let isSwitching = false;
+let lastSwitchTime = 0;
+const MIN_SWITCH_INTERVAL_MS = 20000; // min 20s between RPC switches
 
 async function initMulticall() {
   try {
@@ -211,8 +213,19 @@ function setupNewPairListener() {
     pancakeFactory.on("PairCreated", (token0, token1, pair) => {
       console.log(`✨ [NEW PAIR] PancakeSwap: ${token0.slice(0,6)} / ${token1.slice(0,6)} at ${pair.slice(0,6)}`);
     });
-  } catch (e) {
-    console.error("Failed to setup New Pair Listener:", e.message);
+    // Catch async eth_newFilter errors silently (some RPCs like Ankr block filter subscriptions)
+    const prov = pancakeFactory.runner && (pancakeFactory.runner as any).provider;
+    if (prov && typeof prov.on === 'function') {
+      prov.on('error', (err: any) => {
+        const msg = err && err.message ? err.message : String(err);
+        if (msg.includes('Origin not allowed') || msg.includes('newFilter') || (err && err.code === 'BAD_DATA')) {
+          return; // silently ignore - this RPC does not support eth_newFilter
+        }
+        console.warn('[PairCreated listener] Provider error:', msg);
+      });
+    }
+  } catch (e: any) {
+    console.warn('New Pair Listener skipped (eth_newFilter not supported):', e.message);
   }
 }
 
@@ -263,8 +276,12 @@ function connectToWs(url: string, sourceName: string, headers: any = {}) {
 
 async function switchRpc() {
   if (isSwitching) return;
+  const now = Date.now();
+  if (now - lastSwitchTime < MIN_SWITCH_INTERVAL_MS) {
+    return; // cooldown: too soon to switch again
+  }
   isSwitching = true;
-  
+  lastSwitchTime = now;
   try {
     await performSwitch();
   } finally {
@@ -620,10 +637,10 @@ app.post("/api/verify-contract", async (req, res) => {
   try {
     const checkProvider = rpcEndpoint ? new ethers.JsonRpcProvider(rpcEndpoint) : provider;
     const timeoutMs = 8000;
-    const timeoutPromise = new Promise<never>((_, reject) =>
+    const timeoutPromise = new Promise((_, reject) =>
       setTimeout(() => reject(new Error("RPC timeout after " + timeoutMs + "ms")), timeoutMs)
     );
-    const code = await Promise.race([checkProvider.getCode(contractAddress), timeoutPromise]);
+    const code = await Promise.race([checkProvider.getCode(contractAddress), timeoutPromise]) as string;
     const isContract = code !== "0x" && code.length > 2;
     res.json({ verified: isContract, reason: isContract ? "ok" : "not_a_contract" });
   } catch (err: any) {
