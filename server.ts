@@ -266,7 +266,8 @@ function connectToWs(url: string, sourceName: string, headers: any = {}) {
   }
 }
 
-setupMempoolListeners();
+// Move this to the end of the file to ensure all constants are initialized
+// setupMempoolListeners();
 
 async function switchRpc() {
   if (isSwitching) return;
@@ -706,7 +707,8 @@ app.post("/api/execute", async (req, res) => {
 
     const contract = new ethers.Contract(contractAddress, [
       "function executeArbitrage((address pair, address tokenBorrow, address tokenOut, uint256 loanAmount, address buyDex, address sellDex, uint256 minProfitBps, bytes buyCalldata, uint8 sellDexVersion, uint24 sellFee, uint256 deadline, bytes32 nonce, uint256 sellMinOut, address quoterAddress) p) external",
-      "function owner() view returns (address)"
+      "function owner() view returns (address)",
+      "function PANCAKE_FACTORY() view returns (address)"
     ], wallet);
 
     const factories: Record<string, string> = {
@@ -903,10 +905,11 @@ app.post("/api/execute", async (req, res) => {
 
     // Theoretical Profit Check
     let currentProfitBps = 0n;
-    try {
-      const readProvider = multicallProvider || provider;
-      const buyRouter = new ethers.Contract(buyRouterAddr, ROUTER_ABI, readProvider);
-      const sellRouter = new ethers.Contract(sellRouterAddr, ROUTER_ABI, readProvider);
+    let theoreticalCheckSuccess = false;
+    
+    const tryCheckProfit = async (p: any) => {
+      const buyRouter = new ethers.Contract(buyRouterAddr, ROUTER_ABI, p);
+      const sellRouter = new ethers.Contract(sellRouterAddr, ROUTER_ABI, p);
       
       const buyAmounts = await buyRouter.getAmountsOut(buyAmountIn, [borrowToken, outToken]);
       let amountOutFromBuy = buyAmounts[buyAmounts.length - 1];
@@ -917,16 +920,8 @@ app.post("/api/execute", async (req, res) => {
       let fee = (buyAmountIn * 3n) / 997n; // Approx 0.3% fee for flash loan
       let amountToRepay = buyAmountIn + fee;
       
-      let isProfitable = finalAmount > amountToRepay;
       let netChange = finalAmount - amountToRepay;
       currentProfitBps = buyAmountIn > 0n ? (netChange * 10000n) / buyAmountIn : 0n;
-      
-      console.log(`Profit Calculation:
-      - Buy In: ${ethers.formatUnits(buyAmountIn, borrowDecimals)}
-      - Out from Buy: ${ethers.formatUnits(amountOutFromBuy, outDecimals)}
-      - Final Back: ${ethers.formatUnits(finalAmount, borrowDecimals)}
-      - Repay Needed: ${ethers.formatUnits(amountToRepay, borrowDecimals)}
-      - Net Change: ${ethers.formatUnits(netChange, borrowDecimals)}`);
       
       const spotPriceA = ethers.parseUnits("1", borrowDecimals);
       const spotAmountsB = await buyRouter.getAmountsOut(spotPriceA, [borrowToken, outToken]);
@@ -935,119 +930,174 @@ app.post("/api/execute", async (req, res) => {
       const spotRepay = spotPriceA + (spotPriceA * 3n) / 997n;
       const maxPossibleBps = ((spotFinal - spotRepay) * 10000n) / spotPriceA;
 
-      console.log(`📊 Market Analysis:
-      - Spot Final: ${ethers.formatUnits(spotFinal, borrowDecimals)}
-      - Spot Repay: ${ethers.formatUnits(spotRepay, borrowDecimals)}
-      - Max Theoretical Spread: ${maxPossibleBps} bps (after fees)
-      - Current Amount Spread: ${currentProfitBps} bps (after slippage)`);
+      return {
+        amountOutFromBuy,
+        finalAmount,
+        amountToRepay,
+        netChange,
+        currentProfitBps,
+        maxPossibleBps,
+        buyRouter,
+        sellRouter
+      };
+    };
 
-      // CRITICAL: Early exit if theoretical spread is too low
-      if (maxPossibleBps < 30n) {
-        console.log(`🛑 Max Theoretical Spread (${maxPossibleBps} bps) is below 30 bps. Aborting to save CPU cycles.`);
-        return res.status(400).json({ 
-          error: `Trade is not profitable enough even theoretically. Theoretical profit: ${maxPossibleBps} bps, required: 30 bps.` 
-        });
-      }
-
-      if (maxPossibleBps <= BigInt(minProfitBps)) {
-        console.log(`🛑 Max Theoretical Spread (${maxPossibleBps} bps) is below required ${minProfitBps} bps. Aborting.`);
-        return res.status(400).json({ 
-          error: `Trade is not profitable enough even theoretically. Theoretical profit: ${maxPossibleBps} bps, required: ${minProfitBps} bps.` 
-        });
-      }
-
-      if (currentProfitBps < BigInt(minProfitBps)) {
-        console.log(`⚠️ Trade not profitable with ${ethers.formatUnits(buyAmountIn, borrowDecimals)}. Searching for a better amount...`);
-        
-        // Try to find a profitable amount if the current one is too large
+    try {
+      // Try with multicall provider first, then primary provider, then fallback RPCs
+      let checkResult: any = null;
+      const providersToTry = [multicallProvider, provider];
+      
+      // Add a few more public RPCs as absolute fallbacks
+      const fallbackUrls = ["https://bsc-rpc.publicnode.com", "https://rpc.ankr.com/bsc"];
+      
+      for (const p of providersToTry) {
+        if (!p) continue;
         try {
-          let low = ethers.parseUnits("0.1", borrowDecimals);
-          let high = buyAmountIn;
-          let bestAmount = 0n;
-          
-          // Binary search for 10 iterations to find a better amount
-          for (let i = 0; i < 10; i++) {
-            let mid = (low + high) / 2n;
-            if (mid < ethers.parseUnits("0.1", borrowDecimals)) break;
-            
-            const bAmounts = await buyRouter.getAmountsOut(mid, [borrowToken, outToken]);
-            const sAmounts = await sellRouter.getAmountsOut(bAmounts[bAmounts.length - 1], [outToken, borrowToken]);
-            const fAmount = sAmounts[sAmounts.length - 1];
-            const rNeeded = mid + (mid * 3n) / 997n;
-            const pBps = (fAmount - rNeeded) * 10000n / mid;
-            
-            if (pBps >= BigInt(minProfitBps)) {
-              bestAmount = mid;
-              low = mid;
-            } else {
-              high = mid;
-            }
-          }
-          
-          if (bestAmount > 0n) {
-            console.log(`✅ Found profitable amount: ${ethers.formatUnits(bestAmount, borrowDecimals)}. Adjusting trade...`);
-            buyAmountIn = bestAmount;
-            if (useFlashLoan) loanAmt = bestAmount;
-            isAdjusted = true;
-            
-            // Re-calculate values for the adjusted amount
-            const bAmounts = await buyRouter.getAmountsOut(buyAmountIn, [borrowToken, outToken]);
-            amountOutFromBuy = bAmounts[bAmounts.length - 1];
-            const sAmounts = await sellRouter.getAmountsOut(amountOutFromBuy, [outToken, borrowToken]);
-            finalAmount = sAmounts[sAmounts.length - 1];
-            fee = (buyAmountIn * 3n) / 997n;
-            amountToRepay = buyAmountIn + fee;
-            netChange = finalAmount - amountToRepay;
-            currentProfitBps = (netChange * 10000n) / buyAmountIn;
-          } else {
-            const errorMsg = `Trade is not profitable enough even with smaller amounts. Theoretical profit: ${currentProfitBps} bps, required: ${minProfitBps} bps. (Final: ${ethers.formatUnits(finalAmount, borrowDecimals)}, Need: ${ethers.formatUnits(amountToRepay, borrowDecimals)})`;
-            return res.status(400).json({ error: errorMsg });
-          }
+          checkResult = await tryCheckProfit(p);
+          theoreticalCheckSuccess = true;
+          break;
         } catch (e) {
-          console.error("Auto-adjustment failed:", e);
-          return res.status(400).json({ error: "Could not find a profitable trade amount." });
+          console.log(`Theoretical check failed on primary provider, trying next...`);
+        }
+      }
+      
+      if (!theoreticalCheckSuccess) {
+        for (const url of fallbackUrls) {
+          try {
+            const tempProvider = new ethers.JsonRpcProvider(url, bscNetwork, { staticNetwork: true });
+            checkResult = await tryCheckProfit(tempProvider);
+            theoreticalCheckSuccess = true;
+            break;
+          } catch (e) {
+            console.log(`Theoretical check failed on fallback RPC ${url}, trying next...`);
+          }
         }
       }
 
-      // Calculate slippage impact for logging
-      const spotPrice = ethers.parseUnits("1", borrowDecimals);
-      
-      // Buy side slippage
-      const spotAmountsBuy = await buyRouter.getAmountsOut(spotPrice, [borrowToken, outToken]);
-      const spotOutBuy = BigInt(spotAmountsBuy[spotAmountsBuy.length - 1]);
-      const expectedOutNoSlippageBuy = (buyAmountIn * spotOutBuy) / spotPrice;
-      const slippageBuy = expectedOutNoSlippageBuy > 0n ? 
-        Number((expectedOutNoSlippageBuy - BigInt(amountOutFromBuy)) * 10000n / expectedOutNoSlippageBuy) / 100 : 0;
+      if (theoreticalCheckSuccess && checkResult) {
+        let { amountOutFromBuy, finalAmount, amountToRepay, netChange, currentProfitBps, maxPossibleBps, buyRouter, sellRouter } = checkResult;
+        
+        console.log(`Profit Calculation:
+        - Buy In: ${ethers.formatUnits(buyAmountIn, borrowDecimals)}
+        - Out from Buy: ${ethers.formatUnits(amountOutFromBuy, outDecimals)}
+        - Final Back: ${ethers.formatUnits(finalAmount, borrowDecimals)}
+        - Repay Needed: ${ethers.formatUnits(amountToRepay, borrowDecimals)}
+        - Net Change: ${ethers.formatUnits(netChange, borrowDecimals)}`);
+        
+        console.log(`📊 Market Analysis:
+        - Max Theoretical Spread: ${maxPossibleBps} bps (after fees)
+        - Current Amount Spread: ${currentProfitBps} bps (after slippage)`);
 
-      // Sell side slippage
-      const spotPriceOut = ethers.parseUnits("1", outDecimals);
-      const spotAmountsSell = await sellRouter.getAmountsOut(spotPriceOut, [outToken, borrowToken]);
-      const spotOutSell = BigInt(spotAmountsSell[spotAmountsSell.length - 1]);
-      const expectedOutNoSlippageSell = (BigInt(amountOutFromBuy) * spotOutSell) / spotPriceOut;
-      const slippageSell = expectedOutNoSlippageSell > 0n ? 
-        Number((expectedOutNoSlippageSell - BigInt(finalAmount)) * 10000n / expectedOutNoSlippageSell) / 100 : 0;
+        // CRITICAL: Early exit if theoretical spread is too low
+        if (maxPossibleBps < 30n) {
+          console.log(`🛑 Max Theoretical Spread (${maxPossibleBps} bps) is below 30 bps. Aborting to save CPU cycles.`);
+          return res.status(400).json({ 
+            error: `Trade is not profitable enough even theoretically. Theoretical profit: ${maxPossibleBps} bps, required: 30 bps.` 
+          });
+        }
 
-      const effectiveBuyPrice = amountOutFromBuy > 0n ? Number(buyAmountIn * BigInt("1000000000000000000") / amountOutFromBuy) / 1e18 : 0;
-      const effectiveSellPrice = amountOutFromBuy > 0n ? Number(finalAmount * BigInt("1000000000000000000") / amountOutFromBuy) / 1e18 : 0;
+        if (maxPossibleBps <= BigInt(minProfitBps)) {
+          console.log(`🛑 Max Theoretical Spread (${maxPossibleBps} bps) is below required ${minProfitBps} bps. Aborting.`);
+          return res.status(400).json({ 
+            error: `Trade is not profitable enough even theoretically. Theoretical profit: ${maxPossibleBps} bps, required: ${minProfitBps} bps.` 
+          });
+        }
 
-      console.log(`Profit Check Breakdown:
-      - Amount In: ${ethers.formatUnits(buyAmountIn, borrowDecimals)} ${borrowToken}
-      - Buy DEX (${buyDex}): 
-          * Eff. Price: ${effectiveBuyPrice.toFixed(6)}
-          * Slippage: ${slippageBuy.toFixed(2)}%
-      - Sell DEX (${sellDex}): 
-          * Eff. Price: ${effectiveSellPrice.toFixed(6)}
-          * Slippage: ${slippageSell.toFixed(2)}%
-      - Repayment Needed: ${ethers.formatUnits(amountToRepay, borrowDecimals)} ${borrowToken}
-      - Net Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${currentProfitBps} bps)`);
-      
-      if (slippageBuy > 3 || slippageSell > 3) {
-        console.log(`⚠️ WARNING: Significant slippage detected (Buy: ${slippageBuy.toFixed(2)}%, Sell: ${slippageSell.toFixed(2)}%).`);
+        if (currentProfitBps < BigInt(minProfitBps)) {
+          console.log(`⚠️ Trade not profitable with ${ethers.formatUnits(buyAmountIn, borrowDecimals)}. Searching for a better amount...`);
+          
+          // Try to find a profitable amount if the current one is too large
+          try {
+            let low = ethers.parseUnits("0.1", borrowDecimals);
+            let high = buyAmountIn;
+            let bestAmount = 0n;
+            
+            // Binary search for 10 iterations to find a better amount
+            for (let i = 0; i < 10; i++) {
+              let mid = (low + high) / 2n;
+              if (mid < ethers.parseUnits("0.1", borrowDecimals)) break;
+              
+              const bAmounts = await buyRouter.getAmountsOut(mid, [borrowToken, outToken]);
+              const sAmounts = await sellRouter.getAmountsOut(bAmounts[bAmounts.length - 1], [outToken, borrowToken]);
+              const fAmount = sAmounts[sAmounts.length - 1];
+              const rNeeded = mid + (mid * 3n) / 997n;
+              const pBps = (fAmount - rNeeded) * 10000n / mid;
+              
+              if (pBps >= BigInt(minProfitBps)) {
+                bestAmount = mid;
+                low = mid;
+              } else {
+                high = mid;
+              }
+            }
+            
+            if (bestAmount > 0n) {
+              console.log(`✅ Found profitable amount: ${ethers.formatUnits(bestAmount, borrowDecimals)}. Adjusting trade...`);
+              buyAmountIn = bestAmount;
+              if (useFlashLoan) loanAmt = bestAmount;
+              isAdjusted = true;
+              
+              // Re-calculate values for the adjusted amount
+              const bAmounts = await buyRouter.getAmountsOut(buyAmountIn, [borrowToken, outToken]);
+              amountOutFromBuy = bAmounts[bAmounts.length - 1];
+              const sAmounts = await sellRouter.getAmountsOut(amountOutFromBuy, [outToken, borrowToken]);
+              finalAmount = sAmounts[sAmounts.length - 1];
+              const fee = (buyAmountIn * 3n) / 997n;
+              amountToRepay = buyAmountIn + fee;
+              netChange = finalAmount - amountToRepay;
+              currentProfitBps = (netChange * 10000n) / buyAmountIn;
+            } else {
+              const errorMsg = `Trade is not profitable enough even with smaller amounts. Theoretical profit: ${currentProfitBps} bps, required: ${minProfitBps} bps. (Final: ${ethers.formatUnits(finalAmount, borrowDecimals)}, Need: ${ethers.formatUnits(amountToRepay, borrowDecimals)})`;
+              return res.status(400).json({ error: errorMsg });
+            }
+          } catch (e) {
+            console.error("Auto-adjustment failed:", e);
+            return res.status(400).json({ error: "Could not find a profitable trade amount." });
+          }
+        }
+
+        // Calculate slippage impact for logging
+        const spotPrice = ethers.parseUnits("1", borrowDecimals);
+        
+        // Buy side slippage
+        const spotAmountsBuy = await buyRouter.getAmountsOut(spotPrice, [borrowToken, outToken]);
+        const spotOutBuy = BigInt(spotAmountsBuy[spotAmountsBuy.length - 1]);
+        const expectedOutNoSlippageBuy = (buyAmountIn * spotOutBuy) / spotPrice;
+        const slippageBuy = expectedOutNoSlippageBuy > 0n ? 
+          Number((expectedOutNoSlippageBuy - BigInt(amountOutFromBuy)) * 10000n / expectedOutNoSlippageBuy) / 100 : 0;
+
+        // Sell side slippage
+        const spotPriceOut = ethers.parseUnits("1", outDecimals);
+        const spotAmountsSell = await sellRouter.getAmountsOut(spotPriceOut, [outToken, borrowToken]);
+        const spotOutSell = BigInt(spotAmountsSell[spotAmountsSell.length - 1]);
+        const expectedOutNoSlippageSell = (BigInt(amountOutFromBuy) * spotOutSell) / spotPriceOut;
+        const slippageSell = expectedOutNoSlippageSell > 0n ? 
+          Number((expectedOutNoSlippageSell - BigInt(finalAmount)) * 10000n / expectedOutNoSlippageSell) / 100 : 0;
+
+        const effectiveBuyPrice = amountOutFromBuy > 0n ? Number(buyAmountIn * BigInt("1000000000000000000") / amountOutFromBuy) / 1e18 : 0;
+        const effectiveSellPrice = amountOutFromBuy > 0n ? Number(finalAmount * BigInt("1000000000000000000") / amountOutFromBuy) / 1e18 : 0;
+
+        console.log(`Profit Check Breakdown:
+        - Amount In: ${ethers.formatUnits(buyAmountIn, borrowDecimals)} ${borrowToken}
+        - Buy DEX (${buyDex}): 
+            * Eff. Price: ${effectiveBuyPrice.toFixed(6)}
+            * Slippage: ${slippageBuy.toFixed(2)}%
+        - Sell DEX (${sellDex}): 
+            * Eff. Price: ${effectiveSellPrice.toFixed(6)}
+            * Slippage: ${slippageSell.toFixed(2)}%
+        - Repayment Needed: ${ethers.formatUnits(amountToRepay, borrowDecimals)} ${borrowToken}
+        - Net Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${currentProfitBps} bps)`);
+        
+        if (slippageBuy > 3 || slippageSell > 3) {
+          console.log(`⚠️ WARNING: Significant slippage detected (Buy: ${slippageBuy.toFixed(2)}%, Sell: ${slippageSell.toFixed(2)}%).`);
+        }
+        
+        console.log(`Theoretical Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${currentProfitBps} bps)`);
+      } else {
+        console.log("Theoretical profit check could not be completed on any provider.");
       }
-      
-      console.log(`Theoretical Profit: ${ethers.formatUnits(netChange, borrowDecimals)} ${borrowToken} (${currentProfitBps} bps)`);
     } catch (e: any) {
-      console.log("Theoretical profit check failed:", e.message);
+      console.log("Theoretical profit check failed completely:", e.message);
       if (e.message && e.message.includes("INSUFFICIENT_OUTPUT_AMOUNT")) {
         return res.status(400).json({ error: "Theoretical profit check failed: Insufficient output amount on one of the DEXs. The trade is likely not profitable." });
       }
@@ -1087,14 +1137,22 @@ app.post("/api/execute", async (req, res) => {
 
     // Try a static call first
     try {
-      // Check ownership
+      // Check ownership and factory
       try {
-        const owner = await contract.owner();
+        const [owner, contractFactory] = await Promise.all([
+          contract.owner(),
+          contract.PANCAKE_FACTORY().catch(() => ethers.ZeroAddress)
+        ]);
+        
         if (owner.toLowerCase() !== wallet.address.toLowerCase()) {
           return res.status(400).json({ error: `Wallet ${wallet.address} is not the owner of contract ${contractAddress}. Owner is ${owner}.` });
         }
+        
+        if (contractFactory !== ethers.ZeroAddress && contractFactory.toLowerCase() !== selectedFactory.toLowerCase()) {
+          console.warn(`⚠️ Contract factory (${contractFactory}) does not match selected factory (${selectedFactory}). This may cause "Arb: invalid pair" errors.`);
+        }
       } catch (e) {
-        console.log("Could not verify ownership, proceeding...");
+        console.log("Could not verify contract state, proceeding...");
       }
 
       await contract.executeArbitrage.staticCall(params);
@@ -1211,6 +1269,9 @@ async function startServer() {
       console.error("Initial RPC connection failed, switching...");
       await switchRpc();
     }
+
+    // Start mempool listeners after everything is initialized
+    setupMempoolListeners();
   });
 }
 
