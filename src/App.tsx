@@ -385,8 +385,12 @@ export default function App() {
 
     verify();
     fetchBalance();
-    const interval = setInterval(fetchBalance, 15000);
-    return () => clearInterval(interval);
+    const balanceInterval = setInterval(fetchBalance, 15000);
+    const verifyInterval = setInterval(verify, 30000);
+    return () => {
+      clearInterval(balanceInterval);
+      clearInterval(verifyInterval);
+    };
   }, [contractAddress, privateKey, rpcEndpoint]);
 
   const t = translations[language] || translations.en;
