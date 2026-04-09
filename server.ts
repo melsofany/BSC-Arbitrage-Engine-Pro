@@ -31,15 +31,14 @@ let wsProviders: WebSocket[] = [];
 const RPC_NODES = [
   "https://bsc-dataseed.binance.org/",
   "https://bsc-rpc.publicnode.com",
-  "https://rpc.ankr.com/bsc",
-  "https://bsc-dataseed1.defibit.io/"
+  "https://bsc-dataseed1.defibit.io/",
+  "https://bsc-dataseed1.ninicoin.io/",
+  "https://1rpc.io/bnb"
 ];
 
 const WS_NODES = [
   "wss://bsc-rpc.publicnode.com",
-  "wss://rpc.ankr.com/bsc",
-  "wss://1rpc.io/bnb",
-  "wss://bnb.publicnode.com"
+  "wss://bsc-ws-node.nariox.org"
 ];
 
 // BloXroute & Flashbots Endpoints (BSC)
@@ -951,7 +950,7 @@ app.post("/api/execute", async (req, res) => {
       const providersToTry = [multicallProvider, provider];
       
       // Add a few more public RPCs as absolute fallbacks
-      const fallbackUrls = ["https://bsc-rpc.publicnode.com", "https://rpc.ankr.com/bsc"];
+      const fallbackUrls = ["https://bsc-rpc.publicnode.com", "https://bsc-dataseed.binance.org/"];
       
       for (const p of providersToTry) {
         if (!p) continue;
