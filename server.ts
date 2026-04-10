@@ -786,14 +786,17 @@ app.post("/api/execute", async (req, res) => {
   try {
     const wallet = new ethers.Wallet(privateKey, provider);
     
+    // Contract address - Use the newly deployed one
+    const contractAddressToUse = "0x2F2e832A6D0cdb06E170E1fc60e4ad1Dcf7bb88B";
+    
     // Verify contract address has code
-    const code = await provider.getCode(contractAddress);
+    const code = await provider.getCode(contractAddressToUse);
     if (code === "0x") {
       return res.status(400).json({ error: `The address ${contractAddress} is not a contract. Please deploy the MultiPathFlashArbitrage contract and provide its address.` });
     }
 
     // Use the new v2.0 ABI
-    const contract = new ethers.Contract(contractAddress, MULTIPATH_ARB_ABI, wallet);
+    const contract = new ethers.Contract(contractAddressToUse, MULTIPATH_ARB_ABI, wallet);
 
     // ── Resolve DEXs ─────────────────────────────────────────────────
     const buyDexInfo = resolveDex(buyDex);
@@ -1242,8 +1245,9 @@ app.post("/api/execute-multipath", async (req, res) => {
   }
 
   try {
+    const contractAddressToUse = "0x2F2e832A6D0cdb06E170E1fc60e4ad1Dcf7bb88B";
     const wallet = new ethers.Wallet(privateKey, provider);
-    const contract = new ethers.Contract(contractAddress, MULTIPATH_ARB_ABI, wallet);
+    const contract = new ethers.Contract(contractAddressToUse, MULTIPATH_ARB_ABI, wallet);
 
     // Build hops
     const buyHops = rawBuyHops.map((h: any) => {
